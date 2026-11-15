@@ -542,3 +542,51 @@ def test_fractional_speech_passage_and_simulation_days_are_rejected(session, mon
     for args in ({"op": "speech", "preview": True, "index": 0.5}, {"op": "simulate", "days": 1.5}):
         result = w.workspace_action({"session": session["session"], **args})
         assert "whole number" in result["error"]
+
+
+def test_expanded_conversational_questions_are_answered(account):
+    paid = answer_question("When do I get paid?", account)
+    assert paid["intent"] == "income" and "paycheck" in paid["reply"].lower()
+
+    flow = answer_question("Where does my money go?", account)
+    assert flow["intent"] == "spending" and "cash flow" in flow["reply"].lower()
+
+    phone = answer_question("Can I buy a new phone?", account)
+    assert phone["intent"] == "affordability" and "spending room" in phone["reply"].lower()
+
+    dinner = answer_question("Can I spend $50 on dinner?", account)
+    assert dinner["intent"] == "affordability" and "$50.00" in dinner["reply"]
+
+    save = answer_question("Can I save $500?", account)
+    assert save["intent"] == "affordability" and "savings is safe" in save["reply"].lower()
+
+    advice = answer_question("What should I do?", account)
+    assert advice["intent"] == "advice" and "prioritized financial plan" in advice["reply"].lower()
+
+    subs = answer_question("What are my subscriptions?", account)
+    assert subs["intent"] == "subscriptions" and "subscriptions" in subs["reply"].lower()
+
+    big = answer_question("What is my biggest expense?", account)
+    assert big["intent"] == "spending" and "largest" in big["reply"].lower()
+
+    greeting = answer_question("Hello", account)
+    assert greeting["intent"] == "greeting" and "Solvra" in greeting["reply"]
+
+    unrelated = answer_question("tell me a joke about penguins", account)
+    assert unrelated["intent"] == "help" and "only help with personal-finance questions" in unrelated["reply"]
+
+
+def test_trim_silence_strips_leading_trailing_energy():
+    import numpy as np
+    import solvra_voice as voice
+
+    silence = np.zeros(16000, dtype=np.int16)
+    speech = (np.sin(np.linspace(0, 100, 16000)) * 10000).astype(np.int16)
+    full = np.concatenate([silence, speech, silence])
+    trimmed = voice.trim_silence(full)
+    assert len(trimmed) < len(full)
+    assert len(trimmed) > 0
+    trimmed_bytes = voice.trim_silence(full.tobytes())
+    assert isinstance(trimmed_bytes, bytes)
+    assert len(trimmed_bytes) < len(full.tobytes())
+

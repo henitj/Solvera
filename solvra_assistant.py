@@ -343,6 +343,47 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
             "help",
         )
 
+    if re.search(r"^(?:hi|hello|hey|greetings|howdy|good\s+(?:morning|afternoon|evening))\b", low) or low in ("help", "what can you do", "who are you", "what is solvra"):
+        p_info = getattr(account, "profile", {})
+        name = p_info.get("first_name", "there")
+        checking = account.balance("Checking")
+        bills = f.current_open_bills(account, 14)
+        t = financial_trouble(account)
+        reply = (
+            f"Hello, {name}! I'm Solvra, your personal finance assistant for this demo account.\n\n"
+            f"Here is a quick snapshot of your finances:\n"
+            f"• Checking: {f.money(checking)} | Savings: {f.money(account.balance('Savings'))}\n"
+            f"• Upcoming bills: {len(bills)} due in the next 14 days ({f.money(sum(b.amount for b in bills))})\n"
+            f"• Financial status: {t['label']} ({t['score']}/100 pressure points)\n\n"
+            "Ask me anything about your finances—spending by category, whether you can afford a purchase, bill payment planning, or guidance on what to prioritize."
+        )
+        return result(
+            reply,
+            "greeting",
+            [source("Account ledger", f"Snapshot {f.AS_OF}")],
+            ["What bills are due this week?", "Can I afford a $200 purchase?", "Where does my money go?"],
+        )
+
+    if any(w in low for w in ("who am i", "my profile", "my story", "tell me about myself", "who is maya", "who is jordan", "who is aisha", "who is marcus")):
+        p_info = getattr(account, "profile", {})
+        name = p_info.get("name", "Demo User")
+        role = p_info.get("role", "Professional")
+        story = p_info.get("story", "")
+        goal = p_info.get("goal", "")
+        reply = (
+            f"You are viewing the demo account for {name} ({role}).\n\n"
+            f"• Background: {story}\n"
+            f"• Financial goal: {goal}\n"
+            f"• Current balances: {f.money(account.balance('Checking'))} in checking and {f.money(account.balance('Savings'))} in savings.\n\n"
+            "To switch to another fictional person (Maya, Jordan, Aisha, or Marcus), select Log out in Settings."
+        )
+        return result(
+            reply,
+            "profile",
+            [source("Profile registry", f"{name} ({role})")],
+            ["What are my accounts?", "What bills do I have?", "How am I doing financially?"],
+        )
+
     if re.search(
         r"\b(?:financial (?:trouble|pressure|risk|stress)|trouble (?:rank|score)|urgency|triage|risk ranking|how (?:bad|serious)|am i (?:in trouble|at risk)|rank my finances)\b",
         low,
@@ -645,10 +686,17 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
             "whatif",
         )
 
-    if any(
+    afford_intent = any(
         w in low
         for w in (
             "afford",
+            "can i buy",
+            "can i purchase",
+            "can i get",
+            "can i spend",
+            "should i buy",
+            "is it safe to buy",
+            "is it safe to spend",
             "safe to spend",
             "safely spend",
             "left to spend",
@@ -657,8 +705,32 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
             "spendable",
             "can i save",
         )
-    ):
+    )
+    if afford_intent:
         buffer = planning_buffer(account)
+        if re.search(r"\b(?:save|deposit|put aside|set aside)\b", low) and amount is not None:
+            reply = (
+                f"Setting aside {f.money(amount)} into savings is "
+                + (
+                    f"safe under your current plan. Your modeled 30-day spending room is {f.money(buffer['headroom'])}, leaving {f.money(buffer['headroom'] - amount)} in headroom after the transfer."
+                    if buffer["headroom"] >= amount
+                    else f"tight under your current plan. Your modeled 30-day headroom is {f.money(buffer['headroom'])}, so transferring {f.money(amount)} would reduce your checking cash below your recommended 30-day buffer."
+                )
+                + f"\n\nChecking is currently {f.money(buffer['checking'])}, with {f.money(buffer['bills'])} in 30-day bills and a {f.money(buffer['reserve'])} cash reserve."
+            )
+            return result(
+                reply,
+                "affordability",
+                [
+                    source("Checking ledger", f.money(buffer["checking"])),
+                    source("30-day headroom", f.money(buffer["headroom"])),
+                ],
+                [
+                    "Build my bill payment plan.",
+                    "How can I build a stronger emergency fund?",
+                    "Where can I cut back?",
+                ],
+            )
         reply = f"Your modeled 30-day spending room is {f.money(max(0, buffer['headroom']))}."
         if amount is not None:
             reply = (
@@ -666,6 +738,8 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
                 if buffer["headroom"] >= amount
                 else f"A {f.money(amount)} purchase would exceed modeled headroom by {f.money(amount - buffer['headroom'])}."
             )
+        else:
+            reply += " You can safely make purchases up to this amount without compromising your 30-day bill obligations or cash reserve."
         reply += (
             f"\n\nStarting with {f.money(buffer['checking'])} in checking, I set aside:\n"
             f"• {f.money(buffer['bills'])} for recorded bills due within 30 days\n"
@@ -845,6 +919,10 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
             "how am i doing",
             "how i'm doing",
             "health",
+            "financial health",
+            "financial situation",
+            "how are my finances",
+            "how are my finances looking",
             "okay financially",
             "ok financially",
             "doing financially",
@@ -880,6 +958,203 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
                 "Where can I cut back?",
                 "Build my bill payment plan.",
             ],
+        )
+
+    if any(
+        w in low
+        for w in (
+            "what should i do",
+            "what do i do",
+            "what should i prioritize",
+            "give me advice",
+            "financial advice",
+            "help me manage my money",
+            "how do i improve my finances",
+            "how to improve my financial situation",
+            "where should i start",
+            "what to do first",
+            "financial guidance",
+            "financial tips",
+            "manage my money",
+            "advice for me",
+        )
+    ):
+        t = financial_trouble(account)
+        rank = t["rank"]
+        label = t["label"]
+        checking = account.balance("Checking")
+        savings = account.balance("Savings")
+        overdue = [b for b in account.bills if b.status != "Paid" and b.effective_due < f.AS_OF]
+        if rank == 1:
+            steps = (
+                f"1. Handle immediate arrears: You have {len(overdue)} overdue bills totaling {f.money(sum(b.amount for b in overdue))} (including essential rent/utilities). Contact providers immediately to request hardship arrangements before penalties or disconnection escalate.\n"
+                f"2. Guard survival cash: With {f.money(checking)} in checking, conserve every dollar for food and critical medicine.\n"
+                f"3. Halt non-essential spending: Pause discretionary purchases until essential shelter and utility obligations are stabilized."
+            )
+        elif rank == 2:
+            steps = (
+                f"1. Pay overdue essentials: Bring past-due utilities current to protect vital services.\n"
+                f"2. Coordinate with your next paycheck: Plan bill payments around your upcoming payday to avoid cash shortfalls.\n"
+                f"3. Reduce discretionary spending: Trim flexible dining and shopping to rebuild a safe buffer."
+            )
+        elif rank == 3:
+            steps = (
+                f"1. Buffer irregular cash flow: Keep at least 1–2 months of essentials in cash to weather freelance income gaps.\n"
+                f"2. Tackle high-interest debt: Target credit card balances using the debt avalanche method to reduce monthly interest charges.\n"
+                f"3. Track invoice payments: Keep expected client receipts organized to anticipate low-income weeks."
+            )
+        else:
+            steps = (
+                f"1. Pay down high-interest credit card debt: You have strong cash reserves ({f.money(checking)} checking, {f.money(savings)} savings). Paying off credit card debt will eliminate recurring finance charges.\n"
+                f"2. Maintain emergency savings: Your savings covers {savings / max(f.essential_monthly_expense(account), 1):.1f} months of essentials; keep aiming for 3–6 months.\n"
+                f"3. Put excess cash to work: Once high-APR debt is cleared, consider high-yield savings or retirement accounts."
+            )
+        reply = (
+            f"Here is a prioritized financial plan based on your current status ({label}, priority {rank} of 4, {t['score']}/100 pressure points):\n\n"
+            f"{steps}\n\n"
+            "This guidance is grounded in your demo account's recorded balances and bill terms. Nothing was scheduled or changed."
+        )
+        return result(
+            reply,
+            "advice",
+            [
+                source("Financial triage", f"Priority {rank} ({label}), {t['score']}/100 pressure points."),
+                source("Account balances", f"Checking {f.money(checking)}, savings {f.money(savings)}."),
+            ],
+            ["Build my bill payment plan.", "What bills are overdue?", "Can I afford a $200 purchase?"],
+        )
+
+    if any(
+        w in low
+        for w in (
+            "where does my money go",
+            "where did my money go",
+            "where is my money going",
+            "cash flow",
+            "how is my cash flow",
+            "spending breakdown",
+            "expense breakdown",
+            "monthly expenses",
+            "how much do i spend each month",
+            "what do i spend each month",
+            "breakdown of my spending",
+        )
+    ):
+        p_last = reporting_period("last_month")
+        t_last = totals(account, p_last)
+        df_cat = f.category_spending(account, p_last.start, p_last.end)
+        top_cats = df_cat.head(5)
+        lines = [
+            f"• {r.category}: {f.money(r.spending)} ({r.spending / max(t_last['spending'], 0.01) * 100:.1f}%)"
+            for r in top_cats.itertuples()
+        ]
+        reply = (
+            f"In {p_last.label}, your recorded income was {f.money(t_last['income'])} and total spending was {f.money(t_last['spending'])}, for a net cash flow of {'+' if t_last['net'] >= 0 else ''}{f.money(t_last['net'])}.\n\n"
+            f"Top spending categories:\n"
+            + "\n".join(lines)
+            + "\n\nTransfers between your own checking and savings accounts are excluded from spending."
+        )
+        return result(
+            reply,
+            "spending",
+            [source(f"Recorded cash flow ({p_last.label})", f"Income {f.money(t_last['income'])}, spending {f.money(t_last['spending'])}.")],
+            ["What is my biggest expense?", "Where can I cut back?", "How much did I spend on groceries last month?"],
+        )
+
+    if re.search(r"\b(?:subscriptions?|recurring (?:expenses?|charges?|bills?|costs?))\b", low):
+        p_last = reporting_period("last_month")
+        tx = account.transactions
+        sub_tx = tx.loc[(tx.date.dt.date >= p_last.start) & (tx.date.dt.date <= p_last.end) & (tx.category.eq("Subscriptions"))]
+        rec_bills = [
+            b for b in account.bills
+            if b.category in ("Utilities", "Subscriptions") or any(k in b.name.lower() for k in ("phone", "internet", "streaming", "bundle"))
+        ]
+        sub_total = float(-sub_tx.amount.sum()) if not sub_tx.empty else 0.0
+        lines = [f"• {r.merchant}: {f.money(abs(r.amount))} ({r.description})" for r in sub_tx.itertuples()]
+        bill_lines = [f"• {b.name} ({b.provider}): {f.money(b.amount)}, due {f._spoken_date(b.effective_due)}" for b in rec_bills]
+        reply = "Here are your recorded subscriptions and recurring services:\n\n"
+        if lines:
+            reply += f"Monthly subscriptions ({f.money(sub_total)}/month):\n" + "\n".join(lines) + "\n\n"
+        if bill_lines:
+            reply += "Recurring service bills:\n" + "\n".join(bill_lines) + "\n\n"
+        if not lines and not bill_lines:
+            reply += "No subscription charges are recorded in this account.\n\n"
+        reply += "Reviewing and canceling unused subscriptions is an easy way to free up monthly cash."
+        return result(
+            reply,
+            "subscriptions",
+            [source("Transaction ledger", f"Category Subscriptions in {p_last.label}"), source("Bill register", f"{len(rec_bills)} recurring service bills")],
+            ["Where can I cut back?", "How much did I spend on dining out last month?", "What bills are due this week?"],
+        )
+
+    if re.search(r"\b(?:biggest|largest|highest|top|most expensive)\s+(?:expense|spending|bill|cost|category|outflow)\b|\bwhere (?:do|am) i spend(?:ing)? the most\b", low):
+        p_last = reporting_period("last_month")
+        df_cat = f.category_spending(account, p_last.start, p_last.end)
+        top_cat = df_cat.iloc[0] if not df_cat.empty else None
+        bills_sorted = sorted(account.bills, key=lambda b: b.amount, reverse=True)
+        largest_bill = bills_sorted[0] if bills_sorted else None
+        reply = (
+            f"Your largest spending category in {p_last.label} was {top_cat.category} at {f.money(top_cat.spending)}."
+            + (f" Your single largest open bill is {largest_bill.name} from {largest_bill.provider} ({f.money(largest_bill.amount)})." if largest_bill else "")
+            + f"\n\nAcross categories in {p_last.label}:\n"
+            + "\n".join(f"• {r.category}: {f.money(r.spending)}" for r in df_cat.head(4).itertuples())
+        )
+        return result(
+            reply,
+            "spending",
+            [source(f"Category breakdown ({p_last.label})", f"Top category: {top_cat.category if top_cat is not None else 'None'}")],
+            ["Where can I cut back?", "Where does my money go?", "Build my bill payment plan."],
+        )
+
+    if "emergency fund" in low and any(w in low for w in ("what is", "explain", "how does", "meaning", "definition", "purpose")):
+        monthly = f.essential_monthly_expense(account)
+        savings = account.balance("Savings")
+        months = savings / max(monthly, 1)
+        reply = (
+            f"An emergency fund is money kept in a liquid, easily accessible savings account to protect against unexpected life events (like medical emergencies, car breakdowns, or job loss).\n\n"
+            f"• Guideline: Most financial planners recommend keeping 3 to 6 months of essential living expenses.\n"
+            f"• Your numbers: Essential living expenses are about {f.money(monthly)}/month. Your savings balance of {f.money(savings)} covers about {months:.1f} months of essentials.\n\n"
+            "An emergency buffer keeps you from needing high-interest credit cards or loans when surprises happen."
+        )
+        return result(
+            reply,
+            "education",
+            [source("Savings ledger", f.money(savings)), source("Essential expenses", f"{f.money(monthly)}/month")],
+            ["How can I build a stronger emergency fund?", "Where can I cut back?"],
+        )
+
+    if "apr" in low and any(w in low for w in ("what is", "explain", "how does", "meaning", "definition")):
+        debts = account.debts()
+        reply = (
+            "APR stands for Annual Percentage Rate. It is the yearly cost of borrowing money, including interest and fees, expressed as a percentage.\n\n"
+            "• Why it matters: A higher APR means debt grows faster if balances are not paid in full each month. For example, a 20% APR on a $2,000 credit card balance costs roughly $33/month in interest alone.\n"
+            f"• Your recorded debt: You currently have {f.money(sum(debts.values()))} in recorded debt across {len(debts)} accounts. Prioritizing payments on high-APR accounts saves the most money over time."
+        )
+        return result(
+            reply,
+            "education",
+            [source("Debt ledger", f"Snapshot {f.AS_OF}")],
+            ["What is my total debt?", "What should I pay first?"],
+        )
+
+    if "50/30/20" in low or "50 30 20" in low:
+        period = reporting_period("last_month")
+        income = totals(account, period)["income"]
+        reply = (
+            "The 50/30/20 rule is a popular budgeting framework:\n\n"
+            "• 50% for Needs: Rent, groceries, utilities, debt minimums, and insurance.\n"
+            "• 30% for Wants: Dining out, hobbies, shopping, and entertainment.\n"
+            "• 20% for Savings & Extra Debt: Emergency fund, retirement, and accelerated debt payoff.\n\n"
+            f"Based on your last month's income ({f.money(income)}), that allocation would be:\n"
+            f"• Needs (50%): {f.money(income * 0.50)}\n"
+            f"• Wants (30%): {f.money(income * 0.30)}\n"
+            f"• Savings/Debt (20%): {f.money(income * 0.20)}"
+        )
+        return result(
+            reply,
+            "education",
+            [source("Last month's income", f.money(income))],
+            ["Where can I cut back?", "How much did I spend on groceries last month?"],
         )
 
     if any(
@@ -1054,19 +1329,40 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
             "how much money",
             "how much cash",
             "how much do i have",
+            "how much in checking",
+            "how much in savings",
+            "how much is in checking",
+            "how much is in savings",
             "available funds",
             "available money",
             "cash on hand",
             "account total",
             "total cash",
+            "my accounts",
+            "what are my accounts",
+            "list my accounts",
+            "show my accounts",
+            "in the bank",
+            "where is my money",
+            "where's my money",
+            "financial position",
+            "financial snapshot",
         )
     ):
         checking, savings = account.balance("Checking"), account.balance("Savings")
+        debts = account.debts()
+        debt_total = sum(debts.values())
         names = [name for name in ("Checking", "Savings") if name.lower() in low]
-        if len(names) == 1:
+        if len(names) == 1 and not any(k in low for k in ("all", "both", "total", "accounts", "bank", "money", "cash")):
             reply = f"Your {names[0].lower()} balance is {f.money(account.balance(names[0]))}."
         else:
-            reply = f"You have {f.money(checking)} in checking and {f.money(savings)} in savings, so {f.money(checking + savings)} in total."
+            reply = (
+                f"You have {f.money(checking)} in checking and {f.money(savings)} in savings, giving you {f.money(checking + savings)} in total liquid cash.\n\n"
+                f"• Checking account: {f.money(checking)} (for everyday spending and bill payments)\n"
+                f"• Savings account: {f.money(savings)} (emergency reserve cushion)\n"
+                f"• Recorded debt: {f.money(debt_total)} across {len(debts)} debt accounts\n"
+                f"• Net cash position (cash minus debt): {f.money(checking + savings - debt_total)}"
+            )
         return result(
             reply,
             "balance",
@@ -1082,25 +1378,118 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
                 "What is my total debt?",
             ],
         )
-    if any(w in low for w in ("income", "paycheck", "payday", "paid next")):
+    if any(
+        w in low
+        for w in (
+            "income",
+            "paycheck",
+            "payday",
+            "paid next",
+            "when do i get paid",
+            "when was i paid",
+            "when am i paid",
+            "next paycheck",
+            "last paycheck",
+            "how much do i make",
+            "how much did i make",
+            "how much do i earn",
+            "how much did i earn",
+            "what did i earn",
+            "what do i earn",
+            "what is my salary",
+            "what's my salary",
+            "my earnings",
+            "my salary",
+            "take home pay",
+            "my income",
+            "monthly income",
+            "annual income",
+            "when do i get my money",
+            "paid last",
+            "how much i made",
+            "who is my employer",
+            "my employer",
+        )
+    ):
         period = (
             period_for(q)
-            if any(w in low for w in ("month", "days", "week"))
+            if any(w in low for w in ("month", "days", "week", "year"))
             else reporting_period("90days")
         )
         amount = totals(account, period)["income"]
+        paycheck_val = float(account.preferences.get("paycheck", 2200))
+        payday_val = account.preferences.get("payday", f.AS_OF)
+        if isinstance(payday_val, str):
+            payday_val = dt.date.fromisoformat(payday_val)
+
+        income_tx = account.transactions.loc[account.transactions.category.eq("Income")]
+        employer = income_tx.merchant.iloc[-1] if not income_tx.empty else "Primary employer"
+        last_month = totals(account, reporting_period("last_month"))["income"]
+
+        reply = (
+            f"Your next paycheck of about {f.money(paycheck_val)} is expected around {f._spoken_date(payday_val)}.\n\n"
+            f"• Employer / deposit source: {employer}\n"
+            f"• Recorded income in {period.label}: {f.money(amount)}\n"
+            f"• Last complete month (October 2026): {f.money(last_month)}\n\n"
+            "Future paychecks are unconfirmed demo planning estimates and are not counted as available checking cash until confirmed."
+        )
         return result(
-            f"Recorded income in {period.label} is {f.money(amount)}. Your next paycheck of about {f.money(float(account.preferences.get('paycheck', 2200)))} is expected around {f._spoken_date(account.preferences.get('payday', f.AS_OF))}. That future paycheck is unconfirmed and not yet in checking.",
+            reply,
             "income",
             [
-                source("Income transactions", f"{period.start} to {period.end}."),
-                source("Expected paycheck", "Demo assumption, not a verified bank deposit."),
+                source("Income transactions", f"{period.start} to {period.end}; employer {employer}."),
+                source("Expected paycheck", f"{f.money(paycheck_val)} scheduled for {payday_val}."),
             ],
-            ["What if my paycheck is 5 days late?", "Can I afford a $200 purchase?"],
+            ["What if my paycheck is 5 days late?", "Can I afford a $200 purchase?", "Where does my money go?"],
         )
+
+    FINANCIAL_KEYWORDS = {
+        "money", "cash", "dollar", "dollars", "buck", "bucks", "cent", "cents",
+        "pay", "paid", "paying", "paycheck", "payday", "salary", "wage", "wages", "earn", "earned", "earning", "income",
+        "checking", "savings", "account", "accounts", "balance", "balances", "bank",
+        "debt", "debts", "loan", "loans", "owe", "owed", "owing", "credit", "apr", "interest",
+        "bill", "bills", "due", "overdue", "rent", "utility", "utilities", "electric", "electricity", "water", "gas",
+        "groceries", "grocery", "food", "dining", "restaurant", "shopping", "transport", "transportation",
+        "spend", "spent", "spending", "expense", "expenses", "cost", "costs", "purchase", "purchases", "buy", "buying",
+        "afford", "affordable", "headroom", "budget", "budgeting", "financial", "finances", "finance",
+        "transaction", "transactions", "receipt", "subscription", "subscriptions", "recurring",
+        "net worth", "trouble", "score", "health", "priority", "prioritize", "triage", "plan", "planner",
+        "cut back", "save", "saving", "savings", "emergency fund", "advice", "invest", "investing",
+        "maya", "jordan", "aisha", "marcus"
+    }
+    words = set(re.findall(r"[a-z0-9]+", low))
+    has_finance = bool(words & FINANCIAL_KEYWORDS) or any(phrase in low for phrase in ("how am i", "where does my", "can i get", "what do i have", "how are my", "what are my", "help me"))
+
+    if not has_finance:
+        return result(
+            "I'm not sure about that one. I can only help with personal-finance questions using this demo's account data. I can compare spending by category or month, check affordability, explain bills, preview late payments, and record changes after confirmation.\n\nTry a specific question, such as “How much did I spend on groceries last month?”",
+            "help",
+        )
+
+    checking = account.balance("Checking")
+    savings = account.balance("Savings")
+    bills = f.current_open_bills(account, 14)
+    buffer = planning_buffer(account)
+    t = financial_trouble(account)
     return result(
-        "I'm not sure about that one. I can only help with personal-finance questions using this demo's account data. I can compare spending by category or month, check affordability, explain bills, preview late payments, and record changes after confirmation.\n\nTry a specific question, such as “How much did I spend on groceries last month?”",
+        f"Here is your current financial summary to help with your question:\n\n"
+        f"• Checking: {f.money(checking)} | Savings: {f.money(savings)}\n"
+        f"• Open bills: {len(bills)} due in the next 14 days totaling {f.money(sum(b.amount for b in bills))}\n"
+        f"• 30-day spending room (headroom): {f.money(max(0, buffer['headroom']))}\n"
+        f"• Financial status: {t['label']} (priority {t['rank']} of 4, {t['score']}/100 pressure points)\n\n"
+        "Try asking about a specific topic, such as:\n"
+        "• “How much did I spend on groceries last month?”\n"
+        "• “Can I afford a $200 purchase?”\n"
+        "• “What bills are due this week?”\n"
+        "• “Where does my money go?”\n"
+        "• “What should I pay first?”",
         "help",
+        [source("Account snapshot", f"Ledger through {f.AS_OF}")],
+        [
+            "What bills are due this week?",
+            "Can I afford a $200 purchase?",
+            "Where does my money go?",
+        ],
     )
 
 
