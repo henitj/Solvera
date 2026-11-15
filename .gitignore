@@ -1,0 +1,10 @@
+# Python environments and generated runtime files
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.log
+*.mp3
+*.wav
+*.pdf
+*.csv

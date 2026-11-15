@@ -1,0 +1,4 @@
+[tool.ruff.lint]
+# Gradio callbacks and optional OCR/voice/reporting features turn failures into
+# user-facing messages or fallbacks. Keep these boundaries resilient at runtime.
+ignore = ["BLE001"]
