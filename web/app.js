@@ -1,5 +1,6 @@
 // Bundled UI/SDK, same-origin account transport; Puter AI is explicit, consented opt-in.
 const root = element.querySelector("#solvra");
+const GUARDRAIL_POLICY_VERSION = "finance-topic-v2";
 const $ = (id) => root.querySelector("#" + id);
 const esc = (v) =>
   String(v ?? "").replace(
@@ -597,14 +598,14 @@ function renderGuardrails() {
   const controlsDisabled = state.guardrailBusy || !state.guardrailAvailable;
   const runtimeWarning = state.guardrailAvailable
     ? ""
-    : `<div class="guardrail-runtime-warning" role="alert"><span>${icon("info")}</span><div><b>Restart required to run guardrail tests.</b><p>This page is newer than the running server, so no test will be submitted. Restart or relaunch Solvra to load the matching backend. If you are using the notebook, run <b>Load the workspace</b>, then <b>Open Solvra</b>, and use the newly printed link.</p></div></div>`;
+    : `<div class="guardrail-runtime-warning" role="alert"><span>${icon("info")}</span><div><b>Restart required to run guardrail tests.</b><p>This page requires a newer guardrail policy than the running server provides, so no test will be submitted. Restart or relaunch Solvra to load the matching backend. If you are using the notebook, run <b>Load the workspace</b>, then <b>Open Solvra</b>, and use the newly printed link.</p></div></div>`;
   $("view-content").innerHTML = `${runtimeWarning}<section class="guardrail-hero"><div><span class="guardrail-kicker">${icon("shield")} LOCAL POLICY GATE · DEMO MONITOR</span><h2>Test risky prompts safely.</h2><p>Every test is checked locally before it can reach AI or account data. This monitor cannot access another profile, run code, or make a ledger change.</p></div><div class="guardrail-hero-lock">${icon("lock")}<span>Selected account only<br><b>${esc(state.profile?.name || "Demo profile")}</b></span></div></section><div class="guardrail-summary"><article><span>TESTS</span><b>${num(guardrails.requests)}</b><small>this demo session</small></article><article class="blocked"><span>BLOCKED</span><b>${num(guardrails.blocked)}</b><small>stopped locally</small></article><article class="allowed"><span>ALLOWED</span><b>${num(guardrails.allowed)}</b><small>read-only prompts</small></article></div><div class="guardrail-workbench"><section class="card guardrail-tester"><div class="card-header"><div><h2 class="card-title">Input prompt</h2><p class="card-subtitle">Use a built-in attack, or try your own text. Nothing is submitted to Grok from this page.</p></div><span class="category-tag">LOCAL CHECK</span></div><form id="guardrail-form" class="guardrail-form"><label class="sr-only" for="guardrail-input">Prompt to test</label><textarea id="guardrail-input" rows="4" maxlength="3000" placeholder="Try a prompt to test the AI guardrails…" ${controlsDisabled ? "disabled" : ""}></textarea><div><small>Prompts are recorded only in this fictional demo session’s monitor.</small><button class="button primary" type="submit" ${controlsDisabled ? "disabled" : ""}>${icon("shield")}Check prompt</button></div></form><div class="guardrail-presets"><span>BUILT-IN TESTS</span><div>${guardrailScenarios.map((scenario) => `<button class="button secondary" type="button" data-guardrail-scenario="${scenario.id}" title="${esc(scenario.prompt)}" ${controlsDisabled ? "disabled" : ""}>${esc(scenario.label)} ${icon("arrow-up-right")}</button>`).join("")}</div></div></section><aside class="guardrail-latest"><h2>Guardrail decision</h2>${guardrailStatusMarkup(latest)}<div class="guardrail-basics"><b>What is enforced</b><ul><li>Other profiles stay isolated</li><li>Model prompts cannot grant permissions</li><li>Ledger changes require separate confirmation</li></ul></div></aside></div><section class="card guardrail-history"><div class="card-header"><div><h2 class="card-title">Prompt history</h2><p class="card-subtitle">Allowed and declined tests for ${esc(state.profile?.name || "this fictional account")}.</p></div><button class="text-button" data-action="clear-guardrail-history" ${history.length && !controlsDisabled ? "" : "disabled"}>Clear history ${icon("refresh")}</button></div>${history.length ? `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Account</th><th>Prompt</th><th>Decision</th><th>Reason</th></tr></thead><tbody>${history.map((item) => `<tr><td>${esc(item.time)}</td><td>${esc(item.account)}</td><td class="guardrail-prompt">${esc(item.prompt)}</td><td><span class="guardrail-decision ${item.decision === "block" ? "blocked" : "allowed"}">${item.decision === "block" ? "BLOCK" : "ALLOW"}</span></td><td class="guardrail-reason">${esc(item.reason)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="guardrail-history-empty">${icon("shield")}<b>Your prompt history will appear here.</b><p>Run a built-in test to see which requests are blocked and why.</p></div>`}</section>`;
   icons($("view-content"));
 }
 async function checkGuardrailPrompt(prompt) {
   const text = String(prompt || "").trim();
   if (!state.guardrailAvailable) {
-    toast("This page and its server are out of sync. Restart or relaunch Solvra to load the matching backend.", true);
+    toast("This server has an older guardrail policy. Restart or relaunch Solvra to load the matching backend.", true);
     return;
   }
   if (!text || state.guardrailBusy) return;
@@ -979,7 +980,7 @@ function enterWorkspace(res) {
   storeSet("solvra.workspace.v1", res.workspace);
   state.messages = res.messages || [];
   state.pending = res.pending;
-  state.guardrailAvailable = Object.prototype.hasOwnProperty.call(res, "guardrails");
+  state.guardrailAvailable = res.guardrails?.policy_version === GUARDRAIL_POLICY_VERSION;
   state.guardrails = res.guardrails || { history: [], requests: 0, blocked: 0, allowed: 0 };
   state.guardrailBusy = false;
   state.voiceCaps = res.voice;
