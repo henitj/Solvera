@@ -185,25 +185,59 @@ def test_add_transaction_stages_then_confirms_in_shared_ledger(page):
     assert "−$12.34" in page.locator("#tx-results").inner_text()
 
 
-def test_live_captions_are_reviewed_then_sent_without_requiring_auto_send(page):
+def test_inline_voice_sends_one_clean_turn_without_opening_a_dialog(page):
     page.add_init_script(RECOGNIZER)
     open_workspace(page)
     page.locator("#voice-launch").click()
     page.wait_for_function("window.__recognizer?.started")
-    emit_transcript(page, "How much money do I have?")
-    assert page.locator("#voice-transcript").input_value() == "How much money do I have?"
+    assert not page.locator("#voice-dialog").evaluate("dialog => dialog.open")
+    assert page.locator("#inline-voice-status").is_visible()
+
+    # An unexpected interim hypothesis must never send a partial question.
+    page.evaluate(
+        """() => {
+        const results = [[{transcript:'How much money', confidence:0.99}]];
+        results[0].isFinal = false;
+        window.__recognizer.onresult({resultIndex:0, results});
+        }""",
+    )
     assert page.locator(".chat-message").count() == 0
-    page.locator("#voice-start").click()
-    page.wait_for_function("document.querySelector('#voice-stage').dataset.phase === 'review'")
-    page.locator(".voice-settings summary").click()
-    page.locator("#voice-read").uncheck()
-    page.locator("#voice-use").click()
+
+    # A browser can revise a finalized segment more than once. The composer
+    # must replace it—not append it or create two chat turns.
+    emit_transcript(page, "How much money do I have?")
+    emit_transcript(page, "How much money do I have?")
     page.wait_for_selector(".chat-message.assistant", state="attached")
+
+    assert page.locator(".chat-message.user").count() == 1
+    assert page.locator(".chat-message.user .message-text").inner_text() == "How much money do I have?"
     assert "$26,999.44" in page.locator(".chat-message.assistant").inner_text()
     assert not page.locator("#chat-pending").is_visible()
+    assert page.locator("#inline-voice-status").is_hidden()
+
+
+def test_inline_voice_can_leave_one_reviewable_draft_when_auto_send_is_off(page):
+    page.add_init_script(RECOGNIZER)
+    open_workspace(page)
+    page.locator("#settings-button").click()
+    page.locator('[data-action="voice-settings"]').click()
+    page.locator(".voice-settings summary").click()
+    page.locator("#voice-auto").uncheck()
     page.locator("#close-voice").click()
-    assert page.locator("#voice-stage").get_attribute("data-phase") == "idle"
-    assert page.evaluate("window.__recognizer.aborted")
+
+    page.locator("#chat-mic").click()
+    page.wait_for_function("window.__recognizer?.started")
+    emit_transcript(page, "What is my checking balance?")
+    page.wait_for_function(
+        "document.querySelector('#inline-voice-status').dataset.phase === 'review'",
+    )
+
+    assert page.locator("#chat-input").input_value() == "What is my checking balance?"
+    assert page.locator(".chat-message").count() == 0
+    page.locator("#chat-send").click()
+    page.wait_for_selector(".chat-message.assistant", state="attached")
+    assert page.locator(".chat-message.user").count() == 1
+    assert "$19,259.44" in page.locator(".chat-message.assistant").inner_text()
 
 
 def test_permission_denial_is_actionable_and_does_not_hang(page):
@@ -212,12 +246,13 @@ def test_permission_denial_is_actionable_and_does_not_hang(page):
         + "navigator.mediaDevices.getUserMedia = async () => { throw new DOMException('Permission denied', 'NotAllowedError'); };"
     )
     open_workspace(page)
-    page.locator("#voice-launch").click()
+    page.locator("#settings-button").click()
+    page.locator('[data-action="voice-settings"]').click()
+    page.locator("#voice-start").click()
     page.wait_for_selector("#voice-error:not([hidden])")
     assert "permission was denied" in page.locator("#voice-error").inner_text()
-    assert "address bar" in page.locator("#voice-error").inner_text()
+    assert "site settings" in page.locator("#voice-error").inner_text()
     assert page.locator("#voice-start").is_enabled()
-    assert page.locator("#voice-new-tab").get_attribute("href").startswith(URL)
     page.locator("#close-voice").click()
     assert "$19,259.44" in ask(page, "What is my checking balance?")
 
@@ -235,7 +270,9 @@ navigator.mediaDevices.getUserMedia = async (constraints) => {
 """
     )
     open_workspace(page)
-    page.locator("#voice-launch").click()
+    page.locator("#settings-button").click()
+    page.locator('[data-action="voice-settings"]').click()
+    page.locator("#voice-start").click()
     page.wait_for_function("typeof window.__grantLate === 'function'")
     page.locator("#close-voice").click()
     page.evaluate("window.__grantLate()")
@@ -244,17 +281,19 @@ navigator.mediaDevices.getUserMedia = async (constraints) => {
     assert page.locator(".chat-message").count() == 0
 
 
-def test_browser_service_failure_switches_to_offline_capture(page):
+def test_browser_service_failure_switches_to_inline_local_capture(page):
     page.add_init_script(RECOGNIZER)
     open_workspace(page)
     page.locator("#voice-launch").click()
     page.wait_for_function("window.__recognizer?.started")
     page.evaluate("window.__recognizer.onerror({error:'network'})")
-    assert page.locator("#voice-status").inner_text() == "Recording offline."
-    assert page.locator("#voice-engine").input_value() == "offline"
-    assert "unreachable" in page.locator("#voice-detail").inner_text()
-    page.locator("#close-voice").click()
-    assert page.locator("#voice-stage").get_attribute("data-phase") == "idle"
+    page.wait_for_function(
+        "document.querySelector('#inline-voice-status').textContent.includes('Listening locally')",
+    )
+    assert not page.locator("#voice-dialog").evaluate("dialog => dialog.open")
+    assert "Listening locally" in page.locator("#inline-voice-status").inner_text()
+    page.evaluate("voice.stopAll()")
+    assert page.locator("#inline-voice-status").is_hidden()
 
 
 def test_actual_offline_upload_is_reviewed_and_never_auto_sent(page):
@@ -349,7 +388,9 @@ def test_missing_or_unavailable_microphone_is_reported(page, error_name, expecte
         + f"navigator.mediaDevices.getUserMedia = async () => {{ throw new DOMException('Capture failed', '{error_name}'); }};"
     )
     open_workspace(page)
-    page.locator("#voice-launch").click()
+    page.locator("#settings-button").click()
+    page.locator('[data-action="voice-settings"]').click()
+    page.locator("#voice-start").click()
     page.wait_for_selector("#voice-error:not([hidden])")
     assert expected in page.locator("#voice-error").inner_text()
     assert page.locator("#voice-start").is_enabled()
@@ -396,15 +437,16 @@ navigator.mediaDevices.getUserMedia = async (constraints) => {
         page.wait_for_function("window.__recognizer?.started")
         page.evaluate("window.__recognizer.onerror({error:'network'})")
         page.wait_for_function(
-            "document.querySelector('#voice-stage').dataset.phase === 'review'",
+            "document.querySelector('#inline-voice-status').dataset.phase === 'review'",
             timeout=45000,
         )
-        # Lossy browser encoding can change a word. Review, not auto-send, is vital.
-        transcript = page.locator("#voice-transcript").input_value().lower()
+        # Lossy browser encoding can change a word. The recovery transcript stays
+        # in the composer for review and must not auto-send a chat turn.
+        transcript = page.locator("#chat-input").input_value().lower()
         assert "go forward" in transcript and len(transcript.split()) >= 3
-        assert not page.locator("#voice-error").is_visible()
+        assert not page.locator("#voice-dialog").evaluate("dialog => dialog.open")
         assert page.locator(".chat-message").count() == 0
-        assert page.locator("#voice-use").is_enabled()
+        assert page.locator("#chat-send").is_enabled()
         assert page.evaluate(
             "window.__capturedStream.getTracks().every(t => t.readyState === 'ended')"
         )
@@ -1344,20 +1386,14 @@ def test_login_error_and_expired_session_return_to_safe_recoverable_login(page):
 
 
 @pytest.mark.parametrize("clear", ["reset", "clear-chat"])
-def test_reset_and_clear_remove_old_voice_answers_and_transcript(page, clear):
+def test_reset_and_clear_remove_old_inline_voice_turns_and_drafts(page, clear):
     page.add_init_script(RECOGNIZER)
     open_workspace(page, "aisha")
     page.locator("#voice-launch").click()
     page.wait_for_function("window.__recognizer?.started")
     emit_transcript(page, "What is my checking balance?")
-    page.locator("#voice-start").click()
-    page.wait_for_function("document.querySelector('#voice-stage').dataset.phase==='review'")
-    page.locator(".voice-settings summary").click()
-    page.locator("#voice-read").uncheck()
-    page.locator("#voice-use").click()
-    page.wait_for_selector("#voice-answer")
-    assert "$980.00" in page.locator("#voice-answer").inner_text()
-    page.locator("#close-voice").click()
+    page.wait_for_selector(".chat-message.assistant")
+    assert "$980.00" in page.locator(".chat-message.assistant").inner_text()
     if clear == "reset":
         page.locator("#settings-button").click()
         page.locator('[data-action="confirm-reset"]').click()
@@ -1366,9 +1402,6 @@ def test_reset_and_clear_remove_old_voice_answers_and_transcript(page, clear):
         page.locator("#chat-options").click()
         page.locator('[data-action="clear-chat"]').click()
     page.wait_for_selector(".chat-welcome")
-    page.locator("#settings-button").click()
-    page.locator('[data-action="voice-settings"]').click()
-    assert page.locator("#voice-transcript").input_value() == ""
-    assert not page.locator("#voice-answer").count()
-    assert page.locator("#voice-stage").get_attribute("data-phase") == "idle"
-    assert page.locator("#speech-stop").is_disabled()
+    assert page.locator("#chat-input").input_value() == ""
+    assert page.locator("#inline-voice-status").is_hidden()
+    assert page.locator(".chat-message").count() == 0

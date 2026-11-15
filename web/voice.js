@@ -860,10 +860,11 @@ class VoiceController {
       .filter((candidate) => candidate.transcript)
       .sort((a, b) => b.score - a.score)[0]?.transcript;
   }
-  updateRecognitionSegments(event, segments) {
+  updateRecognitionSegments(event, segments, finalOnly = false) {
     if (!event?.results) return;
     const first = Number.isInteger(event.resultIndex) ? event.resultIndex : 0;
     for (let index = first; index < event.results.length; index++) {
+      if (finalOnly && !event.results[index].isFinal) continue;
       const candidate = this.bestRecognitionCandidate(event.results[index]);
       if (candidate) segments.set(index, candidate);
     }
@@ -986,7 +987,9 @@ class VoiceController {
       rec.maxAlternatives = 3;
       rec.onresult = (event) => {
         if (!this.inlineActive || generation !== this.inlineGeneration) return;
-        this.updateRecognitionSegments(event, this.inlineSegments);
+        // Ignore an unexpected interim result even if a browser disregards the
+        // interimResults setting: only a completed utterance may be sent.
+        this.updateRecognitionSegments(event, this.inlineSegments, true);
         const text = this.recognitionText(this.inlineSegments);
         if (!text) return;
         this.inlineText = text;
