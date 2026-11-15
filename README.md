@@ -121,6 +121,10 @@ The pinned SDK is bundled locally and initialized only after consent (including 
 - **Honest limits:** AI can make factual or arithmetic mistakes. Verify its guidance against the displayed account sources and local calculations. It has no live market/rate/news feed, does not guarantee returns, and is not a licensed financial/tax/legal adviser. Consequential decisions should be checked with an appropriate professional.
 - **Not an authorization boundary:** topic classification is probabilistic and the browser controls the Puter transport. Scope/output checks are defense in depth, not a cryptographic guarantee of model origin or a security sandbox. Actual ledger permissions and confirmations remain server-enforced; browser/model-supplied actions are never executed. Production use needs independently authenticated, audited infrastructure.
 
+### AI guardrails monitor
+
+The **AI guardrails** workspace tab is a local, visible prompt-security demo. Test a custom prompt or use built-in prompt injection, cross-account, SQL-like injection, role-spoofing, confirmation-bypass, malware, clearly off-topic, and safe-finance examples. Every test is evaluated locally before any AI call or ledger action; the tab shows its **allow/block** decision, reason, counters, and selected-demo-session prompt history. The monitor cannot retrieve another profile, call a model, execute code, or change a ledger. A normal finance prompt may be allowed only as read-only guidance—actual demo ledger changes still use the existing separate review and confirmation controls.
+
 Try these with Grok connected:
 
 - “Compare the avalanche and snowball methods for my debts. What facts would you need to recommend one?”

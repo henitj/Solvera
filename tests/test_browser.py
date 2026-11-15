@@ -191,6 +191,33 @@ def test_add_transaction_stages_then_confirms_in_shared_ledger(page):
     assert "−$12.34" in page.locator("#tx-results").inner_text()
 
 
+def test_ai_guardrails_tab_tests_prompts_and_keeps_the_ledger_unchanged(page):
+    open_workspace(page)
+    assert page.locator("#sidebar-voice").count() == 0
+    page.locator('.main-nav [data-view="guardrails"]').click()
+    page.wait_for_selector("#guardrail-form")
+    assert "AI guardrails" in page.locator("#page-title").inner_text()
+    assert page.locator(".guardrail-history-empty").is_visible()
+
+    page.locator('[data-guardrail-scenario="safe-finance"]').click()
+    page.wait_for_function("document.querySelectorAll('.guardrail-history tbody tr').length === 1")
+    assert page.locator(".guardrail-history tbody tr").first.locator(".guardrail-decision").inner_text() == "ALLOW"
+
+    page.locator('[data-guardrail-scenario="off-topic"]').click()
+    page.wait_for_function("document.querySelectorAll('.guardrail-history tbody tr').length === 2")
+    first = page.locator(".guardrail-history tbody tr").first
+    assert first.locator(".guardrail-decision").inner_text() == "BLOCK"
+    assert "Out-of-scope" in first.inner_text()
+
+    page.locator('[data-guardrail-scenario="cross-account"]').click()
+    page.wait_for_function("document.querySelectorAll('.guardrail-history tbody tr').length === 3")
+    first = page.locator(".guardrail-history tbody tr").first
+    assert first.locator(".guardrail-decision").inner_text() == "BLOCK"
+    assert "Cross-account" in first.inner_text()
+    assert page.locator(".chat-message").count() == 0
+    assert "$19,259.44" in page.locator(".stat-value").first.inner_text()
+
+
 def test_inline_voice_sends_one_clean_turn_without_opening_a_dialog(page):
     page.add_init_script(RECOGNIZER)
     open_workspace(page)
