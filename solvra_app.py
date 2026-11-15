@@ -1,15 +1,13 @@
-# Solvra — synthetic, consequence-aware financial decision support prototype
-# Google Colab-ready, modular single-file implementation. No paid APIs required.
-from __future__ import annotations
-
+# Solvra — a voice money assistant for a fictional household account.
+# Tap "Speak live", ask out loud, hear the answer. Runs locally or in Google Colab; no paid APIs.
 import calendar
 import copy
 import datetime as dt
-import json
+import html
 import os
 import random
 import re
-import tempfile
+import sys
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -18,15 +16,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 from scipy.optimize import Bounds, LinearConstraint, milp
 from scipy.sparse import lil_matrix
-from sklearn.linear_model import LinearRegression
 
 # ----------------------------- data_models ---------------------------------
 AS_OF = dt.date(2026, 11, 14)
-PROJECT_TITLE = "Solvra"
 DISCLAIMER = "This project is a prototype and is not financial advice."
 RNG_SEED = 271828
 
@@ -50,9 +44,7 @@ class Bill:
     risk_after_days: int = 7
     confirmed_extension: bool = False
     extension_date: dt.date | None = None
-    extension_terms: str = ""
     partial_allowed: bool = True
-    source: str = "Synthetic demonstration data"
     status: str = "Upcoming"
 
     @property
@@ -82,15 +74,10 @@ class Scenario:
 
 @dataclass
 class PlanResult:
-    strategy: str
-    payments: list[dict[str, Any]]
-    harm: dict[str, float]
+    payments: list[dict[str, Any]]  # one row per payment: bill_id, bill, date, amount
+    harm: dict[str, float]  # late_fees, interest, critical_harm, total_harm (modeled $)
     total_allocated: float
-    remaining_cash: float
     unpaid: float
-    critical_count: int
-    feasible: bool
-    explanation: list[str]
 
 
 # ----------------------------- synthetic_data ------------------------------
@@ -107,13 +94,9 @@ def _month_iter(start: dt.date, end: dt.date):
             y, m = y + 1, 1
 
 
-def _month_label(d):
-    return pd.Timestamp(d).strftime("%Y-%m")
-
-
-def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
+def generate_demo_records() -> dict[str, Any]:
     """Build a deterministic, ledger-backed fictional 24-month household history."""
-    rng = random.Random(seed)
+    rng = random.Random(RNG_SEED)
     start, cutoff = dt.date(2024, 11, 15), AS_OF
     opening = {"Checking": 1350.0, "Savings": 2450.0}
     initial_debt = {"Credit Card": 2140.0, "Auto Loan": 11800.0, "Student Loan": 6450.0}
@@ -888,7 +871,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             9,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -907,7 +889,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             35,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -926,7 +907,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             12,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -945,7 +925,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             14,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -964,7 +943,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             12,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -983,7 +961,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             24,
             False,
             None,
-            "",
             False,
         ),
         Bill(
@@ -1002,7 +979,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             12,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -1021,7 +997,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             40,
             False,
             None,
-            "",
             False,
         ),
         Bill(
@@ -1040,7 +1015,6 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             30,
             False,
             None,
-            "",
             True,
         ),
         Bill(
@@ -1059,36 +1033,8 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
             5,
             False,
             None,
-            "",
             False,
         ),
-    ]
-    # Event-driven synthetic profile facts are shown alongside the actual ledger.
-    events_story = [
-        {
-            "date": "2025-05-11",
-            "event": "Unexpected $895 car repair; savings transfer and tighter bill timing followed.",
-        },
-        {
-            "date": "2025-08-16",
-            "event": "Electricity bill rose to $298.40 during a heat wave; partial and late payment recorded.",
-        },
-        {
-            "date": "2025-12-01",
-            "event": "Rent increased from $1,325 to $1,425; seasonal grocery spending also rose.",
-        },
-        {
-            "date": "2026-02-13",
-            "event": "Unexpected $487.35 medical expense during a temporary reduction in work hours.",
-        },
-        {
-            "date": "2026-10-24",
-            "event": "One paycheck arrived four days late; credit-card payment was recorded late.",
-        },
-        {
-            "date": "2026-07-01",
-            "event": "Subscription bundle was reduced after unused services were canceled.",
-        },
     ]
     return {
         "transactions": transactions,
@@ -1098,44 +1044,22 @@ def generate_demo_records(seed: int = RNG_SEED) -> dict[str, Any]:
         "debt_history": debt_history,
         "bills": current_specs,
         "opening": opening,
-        "initial_debt": initial_debt,
-        "events": events_story,
     }
 
 
 # -------------------------- demo_account / persistence ----------------------
 class AccountStore:
-    """One in-memory source of truth; constructed once, reset explicitly by the user."""
+    """The demo account: generated records plus any changes confirmed in the chat."""
 
     def __init__(self, records: dict[str, Any]):
         self.lock = threading.RLock()
         self.records = records
-        self.preferences = {
-            "reserve": 250.0,
-            "financial_priority": "Protect housing and essential services",
-            "special_circumstances": "",
-            "paycheck": 2200.0,
-            "payday": dt.date(2026, 11, 20),
-            "other_income": 0.0,
-            "other_income_date": dt.date(2026, 11, 20),
-        }
-        self.debt_adjustments = {
-            "Credit Card": 0.0,
-            "Auto Loan": 0.0,
-            "Student Loan": 0.0,
-        }
-        self.custom_bills: list[Bill] = []
-        self.removed_bill_ids: set[str] = set()
-        self.chat_context: list[dict[str, str]] = []
-        self.version = 1
+        # Expected next paycheck, used by "what if my paycheck is late?" answers.
+        self.preferences = {"paycheck": 2200.0, "payday": dt.date(2026, 11, 20)}
 
     @property
     def bills(self) -> list[Bill]:
-        return [
-            b
-            for b in self.records["bills"] + self.custom_bills
-            if b.bill_id not in self.removed_bill_ids
-        ]
+        return self.records["bills"]
 
     @property
     def transactions(self) -> pd.DataFrame:
@@ -1154,38 +1078,21 @@ class AccountStore:
             )
 
     def debts(self) -> dict[str, float]:
-        with self.lock:
-            # Latest history is ledger-derived; apply current-session card/loan updates if present.
-            latest = self.records["debt_history"].iloc[-1]
-            return {
-                k: round(
-                    max(0.0, float(latest[k]) + self.debt_adjustments.get(k, 0.0)), 2
-                )
-                for k in ["Credit Card", "Auto Loan", "Student Loan"]
-            }
+        latest = self.records["debt_history"].iloc[-1]
+        return {
+            k: round(max(0.0, float(latest[k])), 2)
+            for k in ("Credit Card", "Auto Loan", "Student Loan")
+        }
 
     def adjust_debt(self, kind: str, delta: float):
-        """delta is positive when liability rises, negative when principal is paid."""
-        aliases = {
-            "credit card": "Credit Card",
-            "credit card minimum": "Credit Card",
-            "auto loan": "Auto Loan",
-            "student loan": "Student Loan",
-        }
-        key = aliases.get(kind.lower(), kind)
-        if key in self.debt_adjustments:
-            base = float(
-                self.records["debt_history"].iloc[-1][key]
-            ) + self.debt_adjustments.get(key, 0.0)
-            updated = max(0.0, base + float(delta))
-            last = self.records["debt_history"].index[-1]
-            self.records["debt_history"].loc[last, key] = updated
-            self.records["debt_history"].loc[last, "total_debt"] = sum(
-                float(self.records["debt_history"].loc[last, k])
-                for k in ("Credit Card", "Auto Loan", "Student Loan")
+        """Change the latest balance of one debt; ``delta`` is negative when principal is paid."""
+        with self.lock:
+            history = self.records["debt_history"]
+            last = history.index[-1]
+            history.loc[last, kind] = max(0.0, float(history.loc[last, kind]) + float(delta))
+            history.loc[last, "total_debt"] = sum(
+                float(history.loc[last, k]) for k in ("Credit Card", "Auto Loan", "Student Loan")
             )
-            self.debt_adjustments[key] = 0.0
-            self.version += 1
 
     def add_transaction(
         self,
@@ -1193,34 +1100,23 @@ class AccountStore:
         category: str,
         merchant: str,
         description: str,
-        date: dt.date | None = None,
-        account: str = "Checking",
-        tx_type: str = "Adjustment",
-        method: str = "Manual entry",
-        recurrence: str = "One-time",
+        tx_type: str,
     ):
+        """Record a confirmed checking-account entry dated on the snapshot day."""
         with self.lock:
-            date = date or AS_OF
-            if date != AS_OF:
-                raise ValueError(
-                    f"Session entries must use the account snapshot date {AS_OF.isoformat()}; use expected-income inputs for future deposits"
-                )
-            if (
-                account in ("Checking", "Savings")
-                and self.balance(account) + float(amount) < -0.01
-            ):
-                raise ValueError(f"Transaction would make {account.lower()} negative")
+            if self.balance("Checking") + float(amount) < -0.01:
+                raise ValueError("Transaction would make checking negative")
             row = {
                 "transaction_id": f"TX-{uuid.uuid4().hex[:10].upper()}",
-                "date": pd.Timestamp(date),
+                "date": pd.Timestamp(AS_OF),
                 "merchant": merchant,
                 "amount": round(float(amount), 2),
                 "category": category,
                 "transaction_type": tx_type,
-                "payment_method": method,
+                "payment_method": "Voice/text confirmed",
                 "description": description,
-                "recurrence": recurrence,
-                "account": account,
+                "recurrence": "One-time",
+                "account": "Checking",
             }
             self.records["transactions"] = (
                 pd.concat(
@@ -1230,52 +1126,36 @@ class AccountStore:
                 .sort_values("date")
                 .reset_index(drop=True)
             )
-            if account == "Checking" and category == "Income" and float(amount) > 0:
+            if category == "Income" and float(amount) > 0:
                 income_row = {
-                    "date": pd.Timestamp(date),
+                    "date": pd.Timestamp(AS_OF),
                     "amount": round(float(amount), 2),
                     "source": merchant,
                     "type": tx_type,
-                    "scheduled_date": date,
+                    "scheduled_date": AS_OF,
                     "delayed": False,
                 }
                 self.records["income_history"] = pd.concat(
                     [self.records["income_history"], pd.DataFrame([income_row])],
                     ignore_index=True,
                 )
-            if account == "Credit Card":
-                self.adjust_debt("Credit Card", -float(amount))
             last = self.records["balance_history"].index[-1]
-            self.records["balance_history"].loc[last, "checking"] = self.balance(
-                "Checking"
-            )
-            self.records["balance_history"].loc[last, "savings"] = self.balance(
-                "Savings"
-            )
-            self.records["balance_history"].loc[last, "total_cash"] = self.balance(
-                "Checking"
-            ) + self.balance("Savings")
-            self.version += 1
-            return row
+            checking, savings = self.balance("Checking"), self.balance("Savings")
+            self.records["balance_history"].loc[last, "checking"] = checking
+            self.records["balance_history"].loc[last, "savings"] = savings
+            self.records["balance_history"].loc[last, "total_cash"] = checking + savings
 
-    def add_bill(self, bill: Bill):
+    def record_bill_payment(self, bill: Bill, amount: float):
+        """Add a payment to the bill history (used by the on-time payment score)."""
         with self.lock:
-            self.custom_bills.append(bill)
-            self.version += 1
-
-    def record_bill_payment(
-        self, bill: Bill, amount: float, date: dt.date | None = None
-    ):
-        with self.lock:
-            date = date or AS_OF
             row = {
                 "bill_id": bill.bill_id,
                 "provider": bill.provider,
                 "bill_name": bill.name,
                 "category": bill.category,
-                "original_amount": round(float(bill.amount + amount), 2),
+                "original_amount": round(float(bill.amount), 2),
                 "due_date": bill.effective_due,
-                "payment_date": date,
+                "payment_date": AS_OF,
                 "amount_paid": round(float(amount), 2),
                 "status": "Paid" if bill.amount - amount < 0.01 else "Partial",
                 "late_fee_paid": 0.0,
@@ -1292,67 +1172,20 @@ class AccountStore:
             self.records["bill_history"] = pd.concat(
                 [self.records["bill_history"], pd.DataFrame([row])], ignore_index=True
             )
-            self.version += 1
 
-    def find_bill(self, identifier: str) -> Bill | None:
-        key = str(identifier).strip().lower()
-        return next(
-            (
-                b
-                for b in self.bills
-                if b.bill_id.lower() == key
-                or b.name.lower() == key
-                or b.provider.lower() == key
-            ),
-            None,
-        )
-
-    def delete_bill(self, identifier: str) -> bool:
-        with self.lock:
-            bill = self.find_bill(identifier)
-            if bill is None:
-                return False
-            if bill in self.custom_bills:
-                self.custom_bills.remove(bill)
-            else:
-                self.removed_bill_ids.add(bill.bill_id)
-            self.version += 1
-            return True
+    def find_bill(self, bill_id: str) -> Bill | None:
+        return next((b for b in self.bills if b.bill_id == bill_id), None)
 
     def reset(self):
+        """Throw away chat changes and regenerate the original demo data."""
         with self.lock:
-            self.records = generate_demo_records()
-            self.custom_bills = []
-            self.preferences = {
-                "reserve": 250.0,
-                "financial_priority": "Protect housing and essential services",
-                "special_circumstances": "",
-                "paycheck": 2200.0,
-                "payday": dt.date(2026, 11, 20),
-                "other_income": 0.0,
-                "other_income_date": dt.date(2026, 11, 20),
-            }
-            self.debt_adjustments = {
-                "Credit Card": 0.0,
-                "Auto Loan": 0.0,
-                "Student Loan": 0.0,
-            }
-            self.removed_bill_ids = set()
-            self.chat_context = []
-            self.version += 1
+            self.__init__(generate_demo_records())
 
 
 DEMO = AccountStore(generate_demo_records())
 
 
 # ------------------------- financial_calculations ---------------------------
-def transactions_for_period(
-    account: AccountStore, days: int | None = 90
-) -> pd.DataFrame:
-    df = account.transactions.copy()
-    if days is not None:
-        df = df[df.date >= pd.Timestamp(AS_OF - dt.timedelta(days=days))]
-    return df
 
 
 def monthly_summary(account: AccountStore) -> pd.DataFrame:
@@ -1405,7 +1238,8 @@ def essential_monthly_expense(account: AccountStore) -> float:
     )
 
 
-def health_assessment(account: AccountStore) -> tuple[int, pd.DataFrame, str]:
+def health_assessment(account: AccountStore) -> tuple[int, pd.DataFrame]:
+    """0-100 score from seven weighted factors, plus the per-factor breakdown."""
     monthly = monthly_summary(account).tail(12)
     income = monthly.income.mean() if not monthly.empty else 0
     expense = monthly.expenses.mean() if not monthly.empty else 0
@@ -1469,41 +1303,28 @@ def health_assessment(account: AccountStore) -> tuple[int, pd.DataFrame, str]:
         ]
     )
     score = round(detail.weighted_points.sum())
-    explanation = (
-        f"Transparent 0–100 index: weighted sum of the seven factors shown (weights total 100%). "
-        f"Income stability uses 1 − 12-month income coefficient of variation; positive cash-flow months use the share of months net-positive; "
-        f"income-to-expense balance averages that positive-month share with a clipped, normalized income-minus-expense margin; "
-        f"emergency coverage is savings ÷ essential monthly expense, capped at 3 months; DTI score declines linearly to zero at 150%; "
-        f"payment score uses recorded late bills; savings trend compares the latest six monthly snapshots. Current coverage is {coverage:.1f} months and DTI is {dti:.1%}. "
-        "This is a transparent prototype indicator, not a credit score or a prediction of outcomes."
+    return score, detail
+
+
+def current_open_bills(account: AccountStore, within_days: int | None = None) -> list[Bill]:
+    """Unpaid bills sorted by due date; optionally only those due within ``within_days`` days."""
+    bills = sorted(
+        (b for b in account.bills if b.status != "Paid"),
+        key=lambda b: (b.effective_due, b.name),
     )
-    return score, detail, explanation
+    if within_days is None:
+        return bills
+    return [b for b in bills if (b.effective_due - AS_OF).days <= within_days]
 
 
-def current_open_bills(account: AccountStore) -> list[Bill]:
-    return [b for b in account.bills if b.status not in ("Paid", "Closed")]
-
-
-def scenario_from_account(
-    account: AccountStore,
-    available: float | None = None,
-    income_amount: float = 0,
-    income_date: dt.date | None = None,
-    reserve: float | None = None,
-    bills: list[Bill] | None = None,
-) -> Scenario:
-    income = []
-    if income_amount and income_date:
-        income.append(
-            IncomeEvent(float(income_amount), income_date, "Expected paycheck", False)
-        )
-    # include other expected income entered as preferences, if any
+def scenario_from_account(account: AccountStore) -> Scenario:
+    """Today's checking balance and open bills as an optimizer scenario (no cash held back)."""
     return Scenario(
-        float(account.balance("Checking") if available is None else available),
+        float(account.balance("Checking")),
         AS_OF,
-        copy.deepcopy(bills if bills is not None else current_open_bills(account)),
-        income,
-        float(account.preferences["reserve"] if reserve is None else reserve),
+        copy.deepcopy(current_open_bills(account)),
+        [],
+        0.0,
         40,
     )
 
@@ -1543,12 +1364,7 @@ def _available_by_date(s: Scenario, date: dt.date) -> float:
     )
 
 
-def _benefit_per_dollar(
-    bill: Bill,
-    payment_date: dt.date,
-    horizon: dt.date,
-    weights: dict[str, float],
-) -> float:
+def _benefit_per_dollar(bill: Bill, payment_date: dt.date, horizon: dt.date) -> float:
     """Estimate how much modeled harm one dollar of payment avoids at a given date."""
     amount = max(float(bill.amount), 0.01)
     fee_avoided = (
@@ -1565,28 +1381,13 @@ def _benefit_per_dollar(
         if payment_date <= _risk_date(bill)
         else 0.0
     )
-    return (
-        weights.get("late_fee", 1.0) * fee_avoided
-        + weights.get("interest", 1.0) * interest_avoided
-        + weights.get("critical", 1.0) * consequence_avoided
-    )
+    return fee_avoided + interest_avoided + consequence_avoided
 
 
-def optimize(s: Scenario, weights: dict[str, float] | None = None) -> PlanResult:
+def optimize(s: Scenario) -> PlanResult:
     """MILP allocation with cash-by-date constraints, minimums, and non-partial bill rules."""
     if not s.bills:
-        return PlanResult(
-            "Intelligent optimization",
-            [],
-            {"late_fees": 0, "interest": 0, "critical_harm": 0, "total_harm": 0},
-            0,
-            max(0, s.available_cash - s.reserve),
-            0,
-            0,
-            True,
-            ["No outstanding bills were supplied."],
-        )
-    weights = weights or {"late_fee": 1.0, "interest": 1.0, "critical": 1.0}
+        return evaluate_plan(s, {})
     dates = _payment_events(s)
     n = len(s.bills)
     t = len(dates)
@@ -1598,7 +1399,7 @@ def optimize(s: Scenario, weights: dict[str, float] | None = None) -> PlanResult
     c = np.zeros(nv)
     for i, b in enumerate(s.bills):
         for j, d in enumerate(dates):
-            benefit = _benefit_per_dollar(b, d, horizon, weights)
+            benefit = _benefit_per_dollar(b, d, horizon)
             # Deterministic tie-break: at equal harm, schedule the payment earlier, never changing meaningful dollar costs.
             c[i * t + j] = -benefit + 1e-7 * (d - s.as_of).days
     integrality = np.zeros(nv, dtype=int)
@@ -1694,449 +1495,148 @@ def optimize(s: Scenario, weights: dict[str, float] | None = None) -> PlanResult
         options={"time_limit": 8},
     )
     if res.x is None:
-        # Explicit valid fallback: hold funds and let the user consider provider contact; never exceed cash.
-        return evaluate_plan(
-            s,
-            {},
-            "Intelligent optimization (safe fallback)",
-            [
-                "Solver did not return a feasible allocation; no funds are allocated automatically."
-            ],
-            weights=weights,
-        )
+        # Safe fallback: allocate nothing rather than risk exceeding available cash.
+        return evaluate_plan(s, {})
     payments = {}
     for i, b in enumerate(s.bills):
         for j, d in enumerate(dates):
             amount = float(res.x[i * t + j])
             if amount > 0.005:
                 payments.setdefault(b.bill_id, []).append((d, amount))
-    return evaluate_plan(
-        s,
-        payments,
-        "Intelligent optimization",
-        [
-            "MILP maximizes modeled penalty reduction under cumulative cash, bill amount, minimum-payment, and non-partial constraints.",
-            f"Consequence weights used: late fee {weights.get('late_fee',1):g}, interest {weights.get('interest',1):g}, critical consequence {weights.get('critical',1):g}.",
-        ],
-        weights=weights,
-    )
+    return evaluate_plan(s, payments)
 
 
 def evaluate_plan(
-    s: Scenario,
-    allocations: dict[str, list[tuple[dt.date, float]]],
-    strategy: str,
-    extra_explanation: list[str] | None = None,
-    weights: dict[str, float] | None = None,
+    s: Scenario, allocations: dict[str, list[tuple[dt.date, float]]]
 ) -> PlanResult:
+    """Total the modeled late fees, interest and consequence risk for a set of dated payments."""
     late_total = interest_total = risk_total = unpaid_total = 0.0
-    critical = 0
-    details = []
     all_pay = []
+    horizon = s.as_of + dt.timedelta(days=s.horizon_days)
     for b in s.bills:
         p = sorted(allocations.get(b.bill_id, []), key=lambda x: x[0])
         paid = min(float(b.amount), sum(max(0, a) for _, a in p))
-        remaining = max(0, float(b.amount) - paid)
-        unpaid_total += remaining
+        unpaid_total += max(0, float(b.amount) - paid)
         by_penalty = sum(a for d, a in p if d <= _penalty_date(b))
-        late = max(0, b.late_fee) * (
+        late_total += max(0, b.late_fee) * (
             max(0, b.amount - by_penalty) / max(b.amount, 0.01)
         )
         # Simple APR daily accrual on unpaid principal from effective due until payment/horizon; not a lender quote.
-        horizon = s.as_of + dt.timedelta(days=s.horizon_days)
         cursor = max(b.effective_due, s.as_of)
         bal = float(b.amount)
-        interest = 0.0
         for d, a in p:
             if d <= cursor:
                 bal = max(0, bal - a)
                 continue
-            days = max(0, (min(d, horizon) - cursor).days)
-            interest += bal * max(0, b.apr) * days / 365
+            interest_total += bal * max(0, b.apr) * max(0, (min(d, horizon) - cursor).days) / 365
             bal = max(0, bal - a)
             cursor = min(d, horizon)
-        days = max(0, (horizon - cursor).days)
-        interest += bal * max(0, b.apr) * days / 365
+        interest_total += bal * max(0, b.apr) * max(0, (horizon - cursor).days) / 365
         unpaid_at_risk = max(0, b.amount - sum(a for d, a in p if d <= _risk_date(b)))
-        risk = max(0, b.critical_risk) * unpaid_at_risk / max(b.amount, 0.01)
-        late_total += late
-        interest_total += interest
-        risk_total += risk
-        if unpaid_at_risk > 0.01 and b.critical_risk > 0:
-            critical += 1
+        risk_total += max(0, b.critical_risk) * unpaid_at_risk / max(b.amount, 0.01)
         if paid > 0:
-            for d, a in p:
-                all_pay.append(
-                    {
-                        "bill_id": b.bill_id,
-                        "bill": b.name,
-                        "provider": b.provider,
-                        "date": d,
-                        "amount": round(a, 2),
-                        "paid_total": round(paid, 2),
-                        "remaining": round(remaining, 2),
-                    }
-                )
-        details.append((b, paid, remaining, late, interest, risk, unpaid_at_risk))
-    weights = weights or {"late_fee": 1.0, "interest": 1.0, "critical": 1.0}
-    total = (
-        late_total * weights.get("late_fee", 1.0)
-        + interest_total * weights.get("interest", 1.0)
-        + risk_total * weights.get("critical", 1.0)
-    )
-    allocated = sum(x["amount"] for x in all_pay)
-    ending = max(
-        0, s.available_cash - s.reserve + sum(i.amount for i in s.incomes) - allocated
-    )
-    explanations = list(extra_explanation or [])
-    for b, paid, remaining, late, interest, risk, unpaidrisk in details:
-        if paid > 0.01:
-            explanations.append(
-                f"{b.name}: allocate ${paid:,.2f} of ${b.amount:,.2f}; estimated ${late:,.2f} fee, ${interest:,.2f} interest, and ${risk:,.2f} consequence-weight exposure remain in the model. Effective due {b.effective_due.isoformat()}; {b.consequence}"
+            all_pay.extend(
+                {"bill_id": b.bill_id, "bill": b.name, "date": d, "amount": round(a, 2)}
+                for d, a in p
             )
-        else:
-            why = "cash is preserved for obligations with greater modeled harm per dollar or unavailable before this deadline"
-            explanations.append(
-                f"{b.name}: defer/seek arrangement; ${b.amount:,.2f} remains. This is not a guarantee of no impact; {why}. {b.consequence}"
-            )
-    # Validate all allocations against cash at dates and account rules.
-    feasible = True
-    for d in _payment_events(s):
-        spent = sum(a for vals in allocations.values() for pdte, a in vals if pdte <= d)
-        if spent > _available_by_date(s, d) + 0.011:
-            feasible = False
-    for b in s.bills:
-        paid = sum(a for d, a in allocations.get(b.bill_id, []))
-        paid_by_due = sum(
-            a for d, a in allocations.get(b.bill_id, []) if d <= b.effective_due
-        )
-        if (
-            paid > b.amount + 0.011
-            or (paid > 0.01 and paid + 0.011 < min(b.minimum_payment, b.amount))
-            or (
-                paid_by_due > 0.01
-                and paid_by_due + 0.011 < min(b.minimum_payment, b.amount)
-            )
-            or (
-                not b.partial_allowed
-                and paid > 0.01
-                and (
-                    abs(paid - b.amount) > 0.011
-                    or len(allocations.get(b.bill_id, [])) > 1
-                )
-            )
-        ):
-            feasible = False
     return PlanResult(
-        strategy,
         all_pay,
         {
             "late_fees": round(late_total, 2),
             "interest": round(interest_total, 2),
             "critical_harm": round(risk_total, 2),
-            "total_harm": round(total, 2),
+            "total_harm": round(late_total + interest_total + risk_total, 2),
         },
-        round(allocated, 2),
-        round(ending, 2),
+        round(sum(x["amount"] for x in all_pay), 2),
         round(unpaid_total, 2),
-        critical,
-        feasible,
-        explanations,
     )
 
 
-# -------------------------- baseline_strategies ----------------------------
-def baseline(
-    s: Scenario, policy: str, weights: dict[str, float] | None = None
-) -> PlanResult:
-    """Shared rules for all baselines: same cash dates, minimums, partial rules and confirmed extensions."""
-    rank = {
-        "Earliest Due Date": lambda b: (b.effective_due, b.name),
-        "Smallest Bill First": lambda b: (b.amount, b.effective_due, b.name),
-        "Largest Bill First": lambda b: (-b.amount, b.effective_due, b.name),
-    }
-    if policy not in rank:
-        raise ValueError("Unknown baseline strategy")
-    dates = _payment_events(s)
-    alloc: dict[str, list[tuple[dt.date, float]]] = {}
-    # Funds are deployed at the earliest event on/after a bill's effective due date.
-    for d in dates:
-        available = max(
-            0,
-            _available_by_date(s, d)
-            - sum(a for vals in alloc.values() for pdte, a in vals if pdte <= d),
-        )
-        candidates = sorted(
-            [
-                b
-                for b in s.bills
-                if b.effective_due <= d
-                and sum(a for _, a in alloc.get(b.bill_id, [])) < b.amount - 0.01
-            ],
-            key=rank[policy],
-        )
-        for b in candidates:
-            if available <= 0.005:
-                break
-            already = sum(a for _, a in alloc.get(b.bill_id, []))
-            remaining = max(0, b.amount - already)
-            if not b.partial_allowed:
-                if available + 0.005 >= remaining:
-                    amount = remaining
-                else:
-                    continue
-            else:
-                amount = min(remaining, available)
-                minimum = max(0, b.minimum_payment - already)
-                if amount + 0.005 < minimum:
-                    continue
-            if amount > 0:
-                alloc.setdefault(b.bill_id, []).append((d, amount))
-                available -= amount
-    return evaluate_plan(
-        s,
-        alloc,
-        policy,
-        [
-            f"Baseline order: {policy}. It uses identical minimum, partial, extension, cash-timing, and cost-evaluation rules; it does not optimize consequence weights."
-        ],
-        weights=weights,
-    )
-
-
-def run_all_strategies(
-    s: Scenario, weights: dict[str, float] | None = None
-) -> list[PlanResult]:
-    return [
-        baseline(s, n, weights)
-        for n in ("Earliest Due Date", "Smallest Bill First", "Largest Bill First")
-    ] + [optimize(s, weights)]
-
-
-def plan_table(results: list[PlanResult]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "Strategy": r.strategy,
-                "Modeled harm ($-equivalent)": r.harm["total_harm"],
-                "Late fees": r.harm["late_fees"],
-                "Interest estimate": r.harm["interest"],
-                "Critical consequences": r.critical_count,
-                "Unpaid obligations": r.unpaid,
-                "Cash allocated": r.total_allocated,
-                "Remaining cash": r.remaining_cash,
-                "Fully paid": r.feasible and r.unpaid < 0.01,
-            }
-            for r in results
-        ]
-    )
-
-
-# -------------------------- simulation_engine ------------------------------
-def simulate_delay(
-    s: Scenario, bill_name: str, days: int
-) -> tuple[Scenario, list[PlanResult]]:
+# -------------------------- what_if_scenarios ------------------------------
+def simulate_delay(s: Scenario, bill_id: str, days: int) -> PlanResult:
+    """Re-run the optimizer as if one bill were due ``days`` later (a what-if, not a real extension)."""
     changed = copy.deepcopy(s)
-    target = next(
-        (
-            b
-            for b in changed.bills
-            if bill_name.lower() in b.name.lower()
-            or bill_name.lower() in b.provider.lower()
-        ),
-        None,
-    )
-    if target is None:
-        return changed, run_all_strategies(changed)
-    target.due_date += dt.timedelta(days=int(days))
-    target.confirmed_extension = True
-    target.extension_date = target.due_date
-    target.extension_terms = f"What-if only: due date shifted {days} days; not a provider-confirmed extension."
-    return changed, run_all_strategies(changed)
+    for b in changed.bills:
+        if b.bill_id == bill_id:
+            b.confirmed_extension = True
+            b.extension_date = b.effective_due + dt.timedelta(days=int(days))
+    return optimize(changed)
 
 
-def simulate_late_payment(bill: Bill, days_late: int) -> tuple[PlanResult, PlanResult]:
-    """Isolated on-time vs late bill cost estimate; actual cash/provider outcomes remain uncertain."""
+def simulate_late_payment(bill: Bill, days_late: int) -> PlanResult:
+    """Estimated fees, interest and risk if this one bill were paid ``days_late`` days after it's due."""
     late_date = bill.effective_due + dt.timedelta(days=max(0, int(days_late)))
     horizon = max(40, (late_date - AS_OF).days + 14)
     s = Scenario(max(0, bill.amount), AS_OF, [copy.deepcopy(bill)], [], 0, horizon)
-    on_time = evaluate_plan(
-        s,
-        {bill.bill_id: [(bill.effective_due, bill.amount)]},
-        "Illustrative on-time payment",
-    )
-    delayed = evaluate_plan(
-        s,
-        {bill.bill_id: [(late_date, bill.amount)]},
-        f"Illustrative payment {days_late} days late",
-    )
-    return on_time, delayed
-
-
-# ------------------------- bill_extraction ---------------------------------
-DATE_PATTERNS = [
-    r"(?:due\s+date|payment\s+due|due)\s*[:#-]?\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})",
-    r"\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b",
-]
-
-
-def _parse_date(s: str) -> dt.date | None:
-    s = s.strip().replace(",", "")
-    for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%B %d %Y", "%b %d %Y"):
-        try:
-            return dt.datetime.strptime(s, fmt).date()
-        except ValueError:
-            pass
-    return None
-
-
-def extract_bill_fields(text: str) -> dict[str, Any]:
-    """Conservative regex extraction; nulls mean unknown and must not be treated as zero."""
-    raw = text or ""
-    lines = [x.strip() for x in raw.splitlines() if x.strip()]
-
-    def money(patterns):
-        for pat in patterns:
-            m = re.search(pat, raw, re.IGNORECASE)
-            if m:
-                try:
-                    return round(float(m.group(1).replace(",", "")), 2)
-                except ValueError:
-                    pass
-        return None
-
-    provider = None
-    for line in lines[:5]:
-        cleaned = re.sub(
-            r"\b(?:bill|statement|account|invoice)\b", "", line, flags=re.IGNORECASE
-        ).strip(" :-")
-        if (
-            cleaned
-            and not re.search(
-                r"(due date|amount due|balance due|minimum payment)",
-                cleaned,
-                re.IGNORECASE,
-            )
-            and len(cleaned) < 80
-        ):
-            provider = cleaned
-            break
-    due = None
-    for pat in DATE_PATTERNS:
-        m = re.search(pat, raw, re.IGNORECASE)
-        if m and (due := _parse_date(m.group(1))):
-            break
-    amount = money(
-        [
-            r"(?:total\s+)?amount\s+due\s*[:$ ]+\$?\s*([\d,]+(?:\.\d{2})?)",
-            r"balance\s+due\s*[:$ ]+\$?\s*([\d,]+(?:\.\d{2})?)",
-        ]
-    )
-    minimum = money([r"minimum\s+(?:payment|due)\s*[:$ ]+\$?\s*([\d,]+(?:\.\d{2})?)"])
-    late = money([r"late\s+fee\s*[:$ ]+\$?\s*([\d,]+(?:\.\d{2})?)"])
-    apr = None
-    m = re.search(r"(?:interest\s+rate|APR)\s*[: ]+([\d.]+)\s*%", raw, re.IGNORECASE)
-    if m:
-        apr = round(float(m.group(1)) / 100, 6)
-    grace = None
-    m = re.search(
-        r"(\d+)\s*(?:calendar\s+)?days?\s+(?:grace\s+period|after\s+the\s+due\s+date)",
-        raw,
-        re.IGNORECASE,
-    )
-    if m:
-        grace = int(m.group(1))
-    extension = None
-    m = re.search(r"(?:extension|payment arrangement)[^\n]{0,90}", raw, re.IGNORECASE)
-    if m:
-        extension = m.group(0).strip()
-    values = {
-        "provider": provider,
-        "amount": amount,
-        "due_date": due.isoformat() if due else None,
-        "minimum_payment": minimum,
-        "late_fee": late,
-        "apr": apr,
-        "grace_days": grace,
-        "extension_terms": extension,
-    }
-    confidence = {
-        k: ("high" if v is not None else "unknown") for k, v in values.items()
-    }
-    # Multiple candidate amounts on the amount-due line are ambiguous, so keep the amount null.
-    amount_line = re.search(r"(?:amount\s+due|balance\s+due)[^\n]*", raw, re.IGNORECASE)
-    if amount_line:
-        candidates = re.findall(r"\$?\s*[\d,]+(?:\.\d{2})?", amount_line.group(0))
-        if len(candidates) > 1:
-            values["amount"] = None
-            confidence["amount"] = "review: multiple candidate amounts"
-    # Ambiguous repeated monetary references elsewhere are explicitly flagged for human review.
-    if (
-        len(re.findall(r"\$\s*[\d,]+(?:\.\d{2})?", raw)) > 3
-        and values["amount"] is not None
-    ):
-        confidence["amount"] = "review: multiple monetary values"
-    if due and due.year < 2020:
-        confidence["due_date"] = "review: unusual year"
-    return {
-        "fields": values,
-        "confidence": confidence,
-        "source_text": raw,
-        "needs_confirmation": True,
-    }
-
-
-def read_uploaded_bill(path: str) -> str:
-    p = Path(path)
-    if p.suffix.lower() == ".pdf":
-        try:
-            from pypdf import PdfReader
-
-            return "\n".join(
-                page.extract_text() or "" for page in PdfReader(str(p)).pages
-            )
-        except Exception as e:
-            return f"PDF text extraction unavailable: {e}"
-    try:
-        import pytesseract
-        from PIL import Image
-
-        return pytesseract.image_to_string(Image.open(p))
-    except Exception as e:
-        return f"Image OCR unavailable ({e}). Paste the bill text instead."
+    return evaluate_plan(s, {bill.bill_id: [(late_date, bill.amount)]})
 
 
 # --------------------------- natural_language -------------------------------
-def upcoming_frame(account: AccountStore) -> pd.DataFrame:
-    rows = []
-    for b in current_open_bills(account):
-        days = (b.effective_due - AS_OF).days
-        rows.append(
-            {
-                "Bill": b.name,
-                "Provider": b.provider,
-                "Amount": b.amount,
-                "Due": b.effective_due.isoformat(),
-                "Days": days,
-                "Status": "Confirmed extension" if b.confirmed_extension else b.status,
-                "Grace (days)": b.grace_days,
-                "Extension terms": b.extension_terms,
-                "Data source": b.source,
-                "Modeled consequence": b.consequence,
-                "Risk class": (
-                    "Critical"
-                    if b.critical_risk >= 300
-                    else ("Elevated" if b.critical_risk > 0 else "Low")
-                ),
-            }
-        )
-    return pd.DataFrame(rows).sort_values("Due") if rows else pd.DataFrame()
-
-
-def _last_month_bounds(today=AS_OF):
-    first = today.replace(day=1)
+def _last_month_bounds() -> tuple[dt.date, dt.date]:
+    """First and last day of the month before the snapshot date."""
+    first = AS_OF.replace(day=1)
     last_prev = first - dt.timedelta(days=1)
     return last_prev.replace(day=1), last_prev
+
+
+def _spoken_date(value) -> str:
+    """'2026-11-16' -> 'Nov 16' (adds the year only when it differs from the snapshot year)."""
+    if isinstance(value, str):
+        try:
+            value = dt.date.fromisoformat(value[:10])
+        except ValueError:
+            return value
+    if isinstance(value, dt.datetime):
+        value = value.date()
+    label = f"{value:%b} {value.day}"
+    return label if value.year == AS_OF.year else f"{label}, {value.year}"
+
+
+def _join_words(items: list[str]) -> str:
+    items = [x for x in items if x]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+_BILL_ALIASES = {
+    "electric": "Electricity",
+    "power": "Electricity",
+    "light bill": "Electricity",
+    "gas bill": "Natural Gas",
+    "wifi": "Internet",
+    "wi-fi": "Internet",
+    "phone": "Mobile Phone",
+    "cell": "Mobile Phone",
+    "car payment": "Auto Loan",
+    "car loan": "Auto Loan",
+    "car insurance": "Auto Insurance",
+    "insurance": "Auto Insurance",
+    "credit card": "Credit Card Minimum",
+    "student": "Student Loan",
+    "streaming": "Streaming & Apps",
+    "subscription": "Streaming & Apps",
+    "netflix": "Streaming & Apps",
+    "rent": "Rent",
+}
+
+
+def _find_bill_in_text(low: str, account: AccountStore) -> Bill | None:
+    """Best-effort match of a bill mentioned in free text (name, provider, or common alias)."""
+    bills = current_open_bills(account) or list(account.bills)
+    for b in bills:
+        if b.name.lower() in low or b.provider.lower() in low:
+            return b
+    for alias, name in _BILL_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", low):
+            match = next((b for b in bills if b.name == name), None)
+            if match:
+                return match
+    for b in bills:
+        words = [w for w in re.findall(r"[a-z]+", b.name.lower()) if len(w) > 4]
+        if any(re.search(rf"\b{w}\b", low) for w in words):
+            return b
+    return None
 
 
 def answer_financial_question(
@@ -2147,7 +1647,7 @@ def answer_financial_question(
     pending = None
     if not q:
         return (
-            "Ask a question about this synthetic account, or dictate one with the microphone.",
+            "Ask me about your balance, upcoming bills, spending, debt, or what to pay first.",
             None,
         )
     if (
@@ -2162,13 +1662,25 @@ def answer_financial_question(
             ),
             "your previous question",
         )
-        result = optimize(scenario_from_account(account, reserve=0))
-        first = next(
-            (x for x in result.explanation if ": allocate $" in x),
-            "No payment is recommended from current assumptions.",
+        s = scenario_from_account(account)
+        result = optimize(s)
+        paid_ids = {p["bill_id"] for p in result.payments if p["amount"] > 0.005}
+        ordered = sorted(
+            (b for b in s.bills if b.bill_id in paid_ids),
+            key=lambda b: (b.effective_due, -b.critical_risk),
         )
+        if not ordered:
+            return (
+                f"About '{previous[:80]}': there isn't enough cash to pay any bill right now, so nothing is recommended yet.",
+                None,
+            )
+        top = ordered[0]
         return (
-            f"Following up on your question, ‘{previous[:100]}’: {first} The model ranks avoided late fees, estimated interest, and explicit consequence weights per dollar; check the assumptions and provider terms before acting.",
+            (
+                f"About '{previous[:80]}': {top.name} comes first because it's due soonest, on {_spoken_date(top.effective_due)}, "
+                f"and paying late risks this: {top.consequence.rstrip('.')}. "
+                "I put bills in order by due date and by how much a late payment would cost you in fees, interest, or lost service."
+            ),
             None,
         )
     # Recognize common updates; stage these for explicit confirmation, never mutate on interpretation alone.
@@ -2179,7 +1691,7 @@ def answer_financial_question(
     )
     if m and any(w in low for w in ["what if", "what happens", "if i"]):
         amount = float(m.group(1).replace(",", ""))
-        s = scenario_from_account(account, reserve=0)
+        s = scenario_from_account(account)
         s.incomes.append(
             IncomeEvent(
                 amount, AS_OF + dt.timedelta(days=1), "What-if additional income", False
@@ -2187,7 +1699,7 @@ def answer_financial_question(
         )
         r = optimize(s)
         return (
-            f"With an additional hypothetical ${amount:,.2f} tomorrow (not recorded as income), the optimized plan allocates ${r.total_allocated:,.2f}, leaves ${r.unpaid:,.2f} unpaid, and has modeled harm ${r.harm['total_harm']:,.2f}. The account itself is unchanged.",
+            f"With an extra ${amount:,.2f} tomorrow, the plan would pay ${r.total_allocated:,.2f} of your bills and leave ${r.unpaid:,.2f} unpaid, with about ${r.harm['total_harm']:,.2f} in estimated fees and interest. This is just a what-if, so nothing was recorded.",
             None,
         )
     if "paycheck" in low and any(w in low for w in ["delay", "delayed", "late"]):
@@ -2198,7 +1710,7 @@ def answer_financial_question(
         mday = re.search(r"(\d+)\s*days?", low)
         days = int(mday.group(1)) if mday else 5
         if any(w in low for w in ["what if", "what happens", "if my"]):
-            s = scenario_from_account(account, reserve=0)
+            s = scenario_from_account(account)
             s.incomes = [
                 IncomeEvent(
                     amount,
@@ -2209,16 +1721,19 @@ def answer_financial_question(
             ]
             result = optimize(s)
             return (
-                f"If the expected ${amount:,.2f} paycheck arrives {days} days later than {payday}, the re-optimized plan allocates ${result.total_allocated:,.2f}, leaves ${result.unpaid:,.2f} unpaid, and models ${result.harm['total_harm']:,.2f} harm. This is a scenario, not an income prediction; account data is unchanged.",
+                f"If your ${amount:,.2f} paycheck came {days} days late, on {_spoken_date(payday + dt.timedelta(days=days))}, the plan would still pay ${result.total_allocated:,.2f} of your bills and leave ${result.unpaid:,.2f} unpaid, with about ${result.harm['total_harm']:,.2f} in estimated fees and interest. This is just a what-if.",
                 None,
             )
         pending = {"action": "paycheck_delay", "days": days, "date": payday.isoformat()}
         return (
-            f"I interpreted this as moving the expected paycheck from {payday} to {payday+dt.timedelta(days=days)} ({days} days later). Confirm before updating planning assumptions.",
+            f"Should I move your expected paycheck from {_spoken_date(payday)} to {_spoken_date(payday+dt.timedelta(days=days))}, {days} days later? Confirm by saying yes, or say no to cancel.",
             pending,
         )
-    m = re.search(r"(?:received|got|earned)\s+\$?([\d,]+(?:\.\d{1,2})?)", low)
-    if m:
+    m = re.search(
+        r"(?:received|got|earned|deposited|made)\s+(?:paid\s+|a\s+|an\s+extra\s+|another\s+)?\$?([\d,]+(?:\.\d{1,2})?)",
+        low,
+    )
+    if m and float(m.group(1).replace(",", "") or 0) > 0:
         amount = float(m.group(1).replace(",", ""))
         pending = {
             "action": "income",
@@ -2227,7 +1742,7 @@ def answer_financial_question(
             "description": "User-reported income",
         }
         return (
-            f"I interpreted that as a ${amount:,.2f} deposit to checking dated today ({AS_OF}). Confirm before I record it.",
+            f"Should I add a ${amount:,.2f} deposit to your checking account? Confirm by saying yes, or say no to cancel.",
             pending,
         )
     m = re.search(r"(?:now have|have)\s+\$?([\d,]+(?:\.\d{1,2})?)\s+less", low)
@@ -2240,7 +1755,7 @@ def answer_financial_question(
             "description": "User-reported available-cash adjustment",
         }
         return (
-            f"I interpreted that as a ${amount:,.2f} decrease in checking. Confirm before I record the adjustment.",
+            f"Should I lower your checking balance by ${amount:,.2f}? Confirm by saying yes, or say no to cancel.",
             pending,
         )
     if "extension" in low and any(
@@ -2265,7 +1780,7 @@ def answer_financial_question(
                 "date": AS_OF.isoformat(),
             }
             return (
-                f"I interpreted this as a provider-approved {days}-day extension for {b.name} ({b.provider}). Confirm to update its due date. Only confirmed extensions are used by the optimizer.",
+                f"Should I record a {days}-day extension for {b.name} from {b.provider}? Confirm by saying yes, or say no to cancel.",
                 pending,
             )
     if "paid" in low:
@@ -2293,45 +1808,183 @@ def answer_financial_question(
                 "date": AS_OF.isoformat(),
             }
             return (
-                f"I interpreted this as a ${amt:,.2f} payment toward {b.name}. Confirm to record it and reduce the open obligation.",
+                f"Should I record a ${amt:,.2f} payment toward {b.name}? Confirm by saying yes, or say no to cancel.",
                 pending,
             )
-    if any(w in low for w in ["how much money", "balance", "checking", "savings"]):
+    if any(
+        w in low
+        for w in [
+            "how much money",
+            "balance",
+            "checking",
+            "savings",
+            "how much cash",
+            "how much do i have",
+        ]
+    ) and not ("why" in low and "saving" in low):
+        checking = account.balance("Checking")
+        savings = account.balance("Savings")
         return (
-            f"As of {AS_OF:%B %d, %Y}, checking is ${account.balance('Checking'):,.2f}, savings is ${account.balance('Savings'):,.2f}, total cash is ${account.balance('Checking')+account.balance('Savings'):,.2f}. The demo data is synthetic.",
+            (
+                f"You have ${checking:,.2f} in checking and ${savings:,.2f} in savings, "
+                f"so ${checking + savings:,.2f} in total."
+            ),
             None,
         )
-    if any(w in low for w in ["due this week", "upcoming", "bills due", "due soon"]):
-        df = upcoming_frame(account)
-        week = df[df.Days <= 7] if not df.empty else df
-        if week.empty:
+    if "net worth" in low:
+        cash = account.balance("Checking") + account.balance("Savings")
+        debt = sum(account.debts().values())
+        return (
+            (
+                f"Your cash is ${cash:,.2f} and your debt is about ${debt:,.2f}, "
+                f"so your rough net worth is ${cash - debt:,.2f}. That doesn't count things like a car or other assets."
+            ),
+            None,
+        )
+    if any(
+        w in low
+        for w in [
+            "due this week",
+            "upcoming",
+            "bills due",
+            "due soon",
+            "what's due",
+            "what is due",
+            "next bill",
+            "coming up",
+            "two weeks",
+            "my bills",
+            "what bills",
+        ]
+    ):
+        horizon = (
+            14
+            if any(
+                w in low
+                for w in ["two weeks", "2 weeks", "upcoming", "coming up", "next bill", "my bills"]
+            )
+            else 7
+        )
+        window = current_open_bills(account, horizon)
+        if not window:
+            return (f"Nothing is due in the next {horizon} days.", None)
+        items = [f"{b.name} ${b.amount:,.2f} on {_spoken_date(b.effective_due)}" for b in window]
+        count = len(items)
+        return (
+            f"You have {count} bill{'s' if count != 1 else ''} due in the next {horizon} days: "
+            + _join_words(items)
+            + f". That's ${sum(b.amount for b in window):,.2f} in total.",
+            None,
+        )
+    if any(
+        w in low
+        for w in [
+            "priorit",
+            "pay first",
+            "what should i pay",
+            "which bill",
+            "which bills",
+            "payment plan",
+            "what to pay",
+        ]
+    ):
+        s = scenario_from_account(account)
+        result = optimize(s)
+        paid = {}
+        for p in result.payments:
+            paid[p["bill_id"]] = paid.get(p["bill_id"], 0) + p["amount"]
+        ordered = sorted(
+            (b for b in s.bills if paid.get(b.bill_id, 0) > 0.005),
+            key=lambda b: (b.effective_due, b.name),
+        )
+        if not ordered:
             return (
-                "No recorded obligations are due in the next seven days in this account snapshot.",
+                (
+                    "Right now there isn't enough cash in checking to cover any bill. "
+                    "Consider calling providers about an extension or payment plan."
+                ),
                 None,
             )
-        short = "; ".join(
-            f"{r['Bill']} ${r['Amount']:,.2f} on {r['Due']}" for _, r in week.iterrows()
+        names = [
+            f"{b.name} ${paid[b.bill_id]:,.2f} (due {_spoken_date(b.effective_due)})"
+            for b in ordered[:6]
+        ]
+        reply = "Here's what I'd pay first, in order: " + _join_words(names)
+        if len(ordered) > 6:
+            reply += f", then {len(ordered) - 6} more"
+        reply += f". That's ${result.total_allocated:,.2f} in total."
+        skipped = [b for b in s.bills if paid.get(b.bill_id, 0) < b.amount - 0.005]
+        if skipped:
+            reply += " " + _join_words(
+                [f"{b.name} (${b.amount - paid.get(b.bill_id, 0):,.2f})" for b in skipped]
+            ) + (
+                " can wait, since paying it late doesn't add a fee or major risk."
+                if result.harm["total_harm"] < 0.01
+                else " can't be fully covered right now."
+            )
+        if result.harm["total_harm"] >= 0.01:
+            reply += f" Estimated fees and interest with this plan: ${result.harm['total_harm']:,.2f}."
+        return reply, None
+    if any(
+        w in low
+        for w in [
+            "how am i doing",
+            "how i'm doing",
+            "health",
+            "okay financially",
+            "ok financially",
+            "doing financially",
+            "financial score",
+            "my score",
+            "am i okay",
+            "am i ok",
+        ]
+    ):
+        score, factors = health_assessment(account)
+        months = account.balance("Savings") / max(essential_monthly_expense(account), 1)
+        weakest = factors.sort_values("component_score_0_100").iloc[0]["factor"].lower()
+        mood = (
+            "You're in good shape"
+            if score >= 75
+            else ("You're doing okay" if score >= 55 else "Things are tight")
         )
         return (
-            f"Recorded bills due within seven days: {short}. Check provider notices for exact terms.",
+            (
+                f"{mood}: your financial health score is {score} out of 100. "
+                f"Your savings would cover about {months:.1f} months of essential expenses. "
+                f"The area with the most room to improve is {weakest}."
+            ),
             None,
         )
-    if any(w in low for w in ["priorit", "pay first", "what should i pay"]):
-        s = scenario_from_account(account, reserve=0)
-        result = optimize(s)
-        names = []
-        for b in s.bills:
-            total = sum(
-                x["amount"] for x in result.payments if x["bill_id"] == b.bill_id
+    named_bill = _find_bill_in_text(low, account)
+    if named_bill and not any(
+        w in low for w in ["owe", "spend", "spent", "late", "delay", "what if", "extension"]
+    ):
+        days = (named_bill.effective_due - AS_OF).days
+        when = (
+            "today"
+            if days == 0
+            else (
+                f"in {days} day{'s' if days != 1 else ''}"
+                if days > 0
+                else f"{-days} day{'s' if days != -1 else ''} ago"
             )
-            if total > 0:
-                names.append(f"{b.name} ${total:,.0f}")
+        )
+        status = (
+            "It's already paid."
+            if named_bill.status == "Paid"
+            else (
+                f"The minimum payment is ${named_bill.minimum_payment:,.2f}."
+                if named_bill.minimum_payment and named_bill.minimum_payment < named_bill.amount
+                else ""
+            )
+        )
         return (
-            "The consequence model recommends allocating available checking cash across "
-            + (", ".join(names) if names else "none right now")
-            + f". Modeled harm is ${result.harm['total_harm']:,.2f} ($-equivalent, including estimates); {result.unpaid:,.2f} remains unpaid. Review the assumptions and unknown provider consequences before acting."
-        ), None
-    if any(w in low for w in ["spend", "expenses", "grocery", "groceries"]):
+            f"Your {named_bill.name} bill from {named_bill.provider} is ${named_bill.amount:,.2f}, "
+            f"due {_spoken_date(named_bill.effective_due)}, {when}. {status}".strip(),
+            None,
+        )
+    if any(w in low for w in ["spend", "spent", "expenses", "grocery", "groceries"]):
         start, end = _last_month_bounds()
         tx = account.transactions
         mask = (
@@ -2349,20 +2002,18 @@ def answer_financial_question(
             .sort_values(ascending=False)
             .head(3)
         )
-        detail = (
-            ", ".join(f"{k} ${v:,.0f}" for k, v in cats.items())
-            or "no category records"
-        )
+        detail = _join_words([f"{k} (${v:,.0f})" for k, v in cats.items()])
         return (
-            f"Recorded spending in {start:%B %Y} was ${total:,.2f}; the largest categories were {detail}. Transfers are excluded to avoid counting savings movements as spending.",
+            f"In {start:%B} you spent ${total:,.2f}."
+            + (f" The biggest categories were {detail}." if detail else ""),
             None,
         )
-    if any(w in low for w in ["debt", "owe"]):
+    if any(w in low for w in ["debt", "owe", "loan"]):
         d = account.debts()
         return (
-            "Latest recorded debt estimates: "
-            + ", ".join(f"{k} ${v:,.0f}" for k, v in d.items())
-            + f"; total ${sum(d.values()):,.0f}. Loan balances are synthetic ledger estimates and should be verified with servicers.",
+            f"You owe about ${sum(d.values()):,.0f} in total: "
+            + _join_words([f"{k} ${v:,.0f}" for k, v in d.items()])
+            + ".",
             None,
         )
     if "delay" in low or ("late" in low and "pay" in low):
@@ -2379,32 +2030,37 @@ def answer_financial_question(
         md = re.search(r"(\d+)\s*days?", low)
         delay = int(md.group(1)) if md else 5
         if bill and "late" in low and "pay" in low:
-            ontime, late_result = simulate_late_payment(bill, delay)
+            late_result = simulate_late_payment(bill, delay)
             return (
-                f"Isolated what-if for {bill.name}: paying ${bill.amount:,.2f} {delay} days after its {bill.effective_due} effective due date models late fee ${late_result.harm['late_fees']:,.2f}, simple-interest estimate ${late_result.harm['interest']:,.2f}, and consequence-weight exposure ${late_result.harm['critical_harm']:,.2f} (total ${late_result.harm['total_harm']:,.2f}). A same-day payment model totals ${ontime.harm['total_harm']:,.2f}. The late-fee rule is prorated in this prototype; actual grace periods, provider actions, and legal protections must be confirmed.",
+                f"If you paid {bill.name} (${bill.amount:,.2f}) {delay} days after it's due on {_spoken_date(bill.effective_due)}, you'd pay about ${late_result.harm['late_fees']:,.2f} in late fees and ${late_result.harm['interest']:,.2f} in interest."
+                + (
+                    f" There's also a risk of this: {bill.consequence.rstrip('.')}."
+                    if late_result.harm["critical_harm"] > 0
+                    else ""
+                )
+                + f" Check {bill.provider}'s actual terms to be sure.",
                 None,
             )
         if bill:
-            s = scenario_from_account(account, reserve=0)
-            _changed, results = simulate_delay(s, bill.name, delay)
-            r = results[-1]
+            s = scenario_from_account(account)
+            r = simulate_delay(s, bill.bill_id, delay)
             return (
-                f"In a what-if only (not a confirmed extension), shifting {bill.name} by {delay} days gives optimized modeled harm ${r.harm['total_harm']:,.2f}, with ${r.unpaid:,.2f} unpaid. Fees and consequences depend on the provider's actual terms; the model cannot confirm whether service or credit reporting changes.",
+                f"If {bill.name} were pushed back {delay} days, estimated fees and interest across all your bills would be about ${r.harm['total_harm']:,.2f}, with ${r.unpaid:,.2f} left unpaid. This is just a what-if, not a confirmed extension.",
                 None,
             )
     if any(w in low for w in ["paycheck", "income"]):
         upcoming = [
             r
             for r in account.records["income_history"].to_dict("records")
-            if r["date"].date() <= AS_OF
+            if pd.Timestamp(r["date"]).date() <= AS_OF
         ]
         recent = sum(
             x["amount"]
             for x in upcoming
-            if x["date"].date() >= AS_OF - dt.timedelta(days=30)
+            if pd.Timestamp(x["date"]).date() >= AS_OF - dt.timedelta(days=30)
         )
         return (
-            f"Recorded income in the last 30 days is ${recent:,.2f}. The next expected paycheck is a user scenario input, not guaranteed; enter its amount and date in Financial Situation before simulating it.",
+            f"You've received ${recent:,.2f} in income over the last 30 days. Your next paycheck of about ${float(account.preferences.get('paycheck') or 0):,.2f} is expected around {_spoken_date(account.preferences.get('payday', AS_OF))}.",
             None,
         )
     if "why" in low and "saving" in low:
@@ -2422,7 +2078,11 @@ def answer_financial_question(
             None,
         )
     return (
-        f"I can answer from this account's transaction, bill, income, debt, and optimization records. Current checking is ${account.balance('Checking'):,.2f}; ask about bills due, spending, debt, savings, or a what-if scenario. {DISCLAIMER}",
+        (
+            "Sorry, I'm not sure about that one. You can ask me things like: how much money do I have, "
+            "what bills are due this week, what should I pay first, how much did I spend last month, "
+            "or how much debt do I have."
+        ),
         None,
     )
 
@@ -2433,7 +2093,7 @@ def confirm_account_update(
     if not pending:
         return "No pending financial change to confirm."
     if not approve:
-        return "No change made."
+        return "Okay, I won't change anything."
     action = pending.get("action")
     if action == "income":
         account.add_transaction(
@@ -2441,11 +2101,9 @@ def confirm_account_update(
             "Income",
             "User-reported income",
             pending["description"],
-            account="Checking",
             tx_type="Income",
-            method="Voice/text confirmed",
         )
-        return f"Confirmed: ${pending['amount']:,.2f} added to checking. Recommendations now use the updated balance."
+        return f"Done. I added ${pending['amount']:,.2f} to checking. Your new balance is ${account.balance('Checking'):,.2f}."
     if action == "cash_reduction":
         amt = float(pending["amount"])
         if amt > account.balance("Checking"):
@@ -2455,11 +2113,9 @@ def confirm_account_update(
             "Other expenses",
             "Available cash adjustment",
             pending["description"],
-            account="Checking",
             tx_type="Adjustment",
-            method="Voice/text confirmed",
         )
-        return f"Confirmed: checking reduced by ${amt:,.2f}."
+        return f"Done. Checking is now ${account.balance('Checking'):,.2f}."
     if action == "paycheck_delay":
         old = pending.get("date")
         try:
@@ -2469,18 +2125,13 @@ def confirm_account_update(
         except Exception:
             new = AS_OF + dt.timedelta(days=int(pending.get("days", 5)))
         account.preferences["payday"] = new
-        account.version += 1
-        return f"Confirmed: expected paycheck planning date moved to {new}. No deposit was recorded."
+        return f"Done. I moved your expected paycheck to {_spoken_date(new)}."
     if action == "extension":
         b = account.find_bill(pending["bill_id"])
         if b:
             b.confirmed_extension = True
             b.extension_date = b.due_date + dt.timedelta(days=int(pending["days"]))
-            b.extension_terms = (
-                f"User-confirmed provider approval: +{pending['days']} days"
-            )
-            account.version += 1
-            return f"Confirmed: {b.name} due date updated to {b.extension_date}. The optimizer will use this confirmed extension."
+            return f"Done. {b.name} is now due {_spoken_date(b.extension_date)}."
     if action == "payment":
         b = account.find_bill(pending["bill_id"])
         amt = min(float(pending["amount"]), b.amount if b else 0)
@@ -2493,10 +2144,7 @@ def confirm_account_update(
             "Transfers" if b.category == "Debt payments" else b.category,
             b.provider,
             f"Payment recorded for {b.name}",
-            account="Checking",
             tx_type="Payment",
-            method="Voice/text confirmed",
-            recurrence="One-time",
         )
         if b.name == "Credit Card Minimum":
             account.adjust_debt("Credit Card", -amt)
@@ -2506,14 +2154,124 @@ def confirm_account_update(
             account.adjust_debt("Student Loan", -amt * 0.88)
         account.record_bill_payment(b, amt)
         b.amount = round(b.amount - amt, 2)
-        account.version += 1
         b.status = "Paid" if b.amount < 0.01 else "Partially paid"
-        return f"Confirmed: ${amt:,.2f} payment recorded; remaining amount on {b.name} is ${b.amount:,.2f}."
+        return (
+            f"Done. I recorded a ${amt:,.2f} payment for {b.name}. "
+            + ("It's fully paid." if b.amount < 0.01 else f"${b.amount:,.2f} is still left on it.")
+        )
     return "Unsupported update; nothing changed."
 
 
 # ----------------------------- voice ---------------------------------------
+_YES_WORDS = {
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "confirmed",
+    "correct", "right", "please", "do", "it", "go", "ahead", "record", "save",
+    "that's", "thats", "that", "is", "sounds", "good", "absolutely", "definitely",
+    "thanks", "thank", "you", "solvra",
+}
+_YES_STARTERS = {"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "confirm", "confirmed",
+                 "correct", "absolutely", "definitely", "do", "go", "record", "save", "that's", "thats"}
+_NO_WORDS = {
+    "no", "nope", "nah", "cancel", "don't", "dont", "do", "not", "stop", "never", "mind",
+    "nevermind", "wrong", "that's", "thats", "please", "thanks", "thank", "you", "it", "solvra",
+}
+_NO_STARTERS = {"no", "nope", "nah", "cancel", "don't", "dont", "do", "stop", "never", "nevermind", "wrong"}
+_GREETINGS = {"hi", "hello", "hey", "hiya", "howdy", "good morning", "good afternoon", "good evening",
+              "hey there", "hi there", "hello there", "yo"}
+_GOODBYES = {"bye", "goodbye", "good bye", "see you", "see ya", "that's all", "thats all",
+             "that is all", "i'm done", "im done", "end chat", "stop listening", "end the chat"}
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z']+", (text or "").lower())
+
+
+def _short_reply_matches(text: str, vocab: set[str], starters: set[str]) -> bool:
+    words = _words(text)
+    return 0 < len(words) <= 6 and words[0] in starters and all(w in vocab for w in words)
+
+
+def assistant_turn(
+    text: str,
+    pending: dict | None = None,
+    last_question: str = "",
+    account: AccountStore = DEMO,
+) -> dict[str, Any]:
+    """One conversational turn for the live voice chat and the typed chat.
+
+    Returns ``reply`` (display text), ``speech`` (text cleaned for text-to-speech),
+    ``pending`` (an update waiting for a spoken/typed yes or no), ``changed``
+    (True when the account was updated) and ``end`` (True when the user said goodbye).
+    """
+    q = re.sub(r"\s+", " ", (text or "")).strip()
+    # Drop a leading wake phrase such as "Hey Solvra," so it doesn't confuse intent matching.
+    q = re.sub(r"^(?:(?:hey|hi|okay|ok)\s+)?solvra[\s,.!?]*", "", q, flags=re.IGNORECASE).strip() or q
+    low = q.lower().strip(" .!?")
+    changed = False
+    end = False
+    new_pending = None
+
+    if not low:
+        reply = "Sorry, I didn't catch that. Could you say it again?"
+        new_pending = pending
+    elif pending and _short_reply_matches(low, _YES_WORDS, _YES_STARTERS) and not _short_reply_matches(
+        low, _NO_WORDS, _NO_STARTERS
+    ):
+        reply = confirm_account_update(pending, True, account)
+        changed = reply.startswith("Done")
+    elif pending and _short_reply_matches(low, _NO_WORDS, _NO_STARTERS):
+        reply = confirm_account_update(pending, False, account)
+    elif low in _GREETINGS or (low.split(" ")[0] in {"hi", "hello", "hey"} and len(low.split()) <= 3):
+        reply = (
+            "Hi! I'm Solvra. Ask me about your balance, upcoming bills, spending, "
+            "debt, or what to pay first."
+        )
+    elif low in _GOODBYES or low.startswith(("bye", "goodbye")):
+        reply = "Goodbye! Come back any time."
+        end = True
+    elif re.fullmatch(r"(?:thanks|thank you|thank you so much|thanks a lot|cool|great|awesome|perfect|got it)(?: solvra)?", low):
+        reply = "You're welcome! Anything else?"
+    elif re.search(
+        r"\b(what can you do|what can i ask|what do you do|help me|^help$|how does this work|who are you)\b",
+        low,
+    ):
+        reply = (
+            "I'm Solvra, your bill and budget helper. You can ask: how much money do I have, "
+            "what bills are due this week, what should I pay first, how much did I spend last month, "
+            "how much debt do I have, or what if I pay a bill late. You can also tell me things like "
+            "'I got paid 500 dollars' and I'll update the account after you confirm."
+        )
+    else:
+        context = [{"role": "user", "content": last_question}] if last_question else []
+        reply, new_pending = answer_financial_question(q, account, context)
+    return {
+        "reply": reply,
+        "speech": speech_text(reply),
+        "pending": new_pending,
+        "changed": changed,
+        "end": end,
+    }
+
+
+def speech_text(text: str) -> str:
+    """Make a reply sound natural when read aloud by the browser's speech synthesizer."""
+    s = re.sub(r"[*_`#>|]", "", text or "")
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", s)
+    s = re.sub(r"(\d{4})-(\d{2})-(\d{2})", lambda m: _spoken_date(m.group(0)), s)
+
+    def _money(m):
+        value = float(m.group(1).replace(",", ""))
+        if value >= 100:
+            return f"${round(value):,}"
+        return f"${value:,.2f}".replace(".00", "")
+
+    s = re.sub(r"\$([\d,]+\.\d{2})", _money, s)
+    s = s.replace("&", " and ").replace("—", ", ").replace(" / ", " or ")
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def transcribe_audio(path: str | None) -> str:
+    """Speech-to-text with Faster-Whisper; used when the browser has no built-in recognition."""
     if not path:
         return ""
     try:
@@ -2522,2460 +2280,710 @@ def transcribe_audio(path: str | None) -> str:
         global _WHISPER_MODEL
         if "_WHISPER_MODEL" not in globals():
             _WHISPER_MODEL = WhisperModel("base.en", device="cpu", compute_type="int8")
-        segments, _ = _WHISPER_MODEL.transcribe(path, beam_size=3)
+        segments, _ = _WHISPER_MODEL.transcribe(
+            path, beam_size=3, language="en", vad_filter=True
+        )
         return " ".join(seg.text.strip() for seg in segments).strip()
     except Exception as e:
         return f"[Transcription unavailable: {e}. Install faster-whisper and retry, or type your question.]"
 
 
-def speech_file(text: str) -> str | None:
-    try:
-        from gtts import gTTS
-
-        path = os.path.join(
-            tempfile.gettempdir(), f"solvra-speech-{uuid.uuid4().hex[:8]}.mp3"
-        )
-        gTTS(text=text[:1200], lang="en", slow=False).save(path)
-        return path
-    except Exception:
-        return None
+# ----------------------------- gradio interface ----------------------------
+# One page, no tabs: a live voice chat on the left and a simple account summary on the right.
+# Live voice runs in the browser: speech recognition (Web Speech API) turns speech into text,
+# Solvra answers on the server, and the browser reads the answer aloud. Browsers without
+# built-in recognition (e.g. Firefox) record short clips that Faster-Whisper transcribes.
 
 
-# -------------------------- evaluation / testing ----------------------------
-def generate_evaluation_scenarios(
-    seed: int = 314159,
-) -> tuple[list[Scenario], list[str]]:
-    rng = random.Random(seed)
-    scenarios = []
-    labels = []
-    start = dt.date(2026, 1, 1)
-    names = [
-        ("Rent", "Housing", 1200, 1550, 950, "Housing stability risk", 700),
-        (
-            "Electricity",
-            "Utilities",
-            70,
-            220,
-            380,
-            "Potential service interruption",
-            250,
-        ),
-        (
-            "Credit Card",
-            "Debt payments",
-            75,
-            500,
-            35,
-            "Interest and credit-reporting risk",
-            200,
-        ),
-        ("Auto Insurance", "Insurance", 90, 230, 22, "Coverage lapse risk", 550),
-        ("Phone", "Utilities", 35, 120, 12, "Service interruption risk", 130),
-        ("Medical", "Medical", 40, 420, 0, "Collection/plan terms uncertain", 100),
-        ("Auto Loan", "Debt payments", 180, 420, 28, "Credit and vehicle risk", 500),
-        ("Internet", "Utilities", 45, 110, 12, "Service restriction risk", 90),
-    ]
-    for idx in range(500):
-        asof = start + dt.timedelta(days=idx % 270)
-        count = rng.randint(3, 6)
-        chosen = rng.sample(names, count)
-        bills = []
-        for j, (name, cat, lo, hi, fee, cons, risk) in enumerate(chosen):
-            amount = round(rng.uniform(lo, hi), 2)
-            due = asof + dt.timedelta(days=rng.randint(0, 15))
-            grace = rng.choice([0, 3, 5, 10, 21]) if cat != "Housing" else 0
-            ext = idx % 7 == 0 and j == 0
-            b = Bill(
-                f"S{idx}-{j}",
-                name,
-                name,
-                cat,
-                amount,
-                due,
-                (
-                    round(min(amount, rng.uniform(20, 60)), 2)
-                    if cat in ("Debt payments", "Utilities")
-                    else 0
-                ),
-                fee,
-                rng.choice([0, 0.05, 0.12, 0.249]),
-                grace,
-                cons,
-                float(risk),
-                rng.randint(3, 15),
-                ext,
-                due + dt.timedelta(days=5) if ext else None,
-                "synthetic confirmed extension" if ext else "",
-                rng.random() > 0.18,
-            )
-            bills.append(b)
-        cash = round(rng.uniform(150, 1800), 2)
-        # Ensure designated difficult cases and income timing patterns occur in every split.
-        if idx % 5 == 0:
-            cash = round(rng.uniform(100, 450), 2)
-        if idx % 9 == 0 and bills:
-            bills[0].amount = round(rng.uniform(300, 850), 2)
-            bills[0].critical_risk = 700
-            bills[0].category = "Housing"
-        incomes = []
-        if idx % 4 == 0:
-            incomes.append(
-                IncomeEvent(
-                    round(rng.uniform(350, 1200), 2),
-                    asof + dt.timedelta(days=rng.randint(5, 20)),
-                    "Paycheck after some deadlines",
-                    False,
-                )
-            )
-        elif idx % 4 == 1:
-            incomes.append(
-                IncomeEvent(
-                    round(rng.uniform(250, 800), 2),
-                    asof + dt.timedelta(days=1),
-                    "Expected paycheck",
-                    False,
-                )
-            )
-        scenarios.append(
-            Scenario(cash, asof, bills, incomes, round(rng.uniform(0, 250), 2), 35)
-        )
-        labels.append("held-out test" if idx >= 350 else "development")
-    return scenarios, labels
-
-
-EVALUATION_CACHE: tuple[pd.DataFrame, pd.DataFrame] | None = None
-
-
-def evaluate_benchmarks(force: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
-    global EVALUATION_CACHE
-    if EVALUATION_CACHE is not None and not force:
-        return EVALUATION_CACHE
-    scenarios, labels = generate_evaluation_scenarios()
-    rows = []
-    # Performance reporting is exclusively held-out; development scenarios remain separated and are never used for tuning.
-    for idx, (s, label) in enumerate(zip(scenarios, labels)):
-        if label != "held-out test":
-            continue
-        for result in run_all_strategies(s):
-            rows.append(
-                {
-                    "scenario_id": f"T{idx-350+1:03d}",
-                    "strategy": result.strategy,
-                    "harm": result.harm["total_harm"],
-                    "late_fees": result.harm["late_fees"],
-                    "interest": result.harm["interest"],
-                    "critical_harm": result.harm["critical_harm"],
-                    "critical_count": result.critical_count,
-                    "unpaid": result.unpaid,
-                    "allocated": result.total_allocated,
-                    "remaining_cash": result.remaining_cash,
-                    "feasible": bool(result.feasible and result.unpaid < 0.01),
-                }
-            )
-    detail = pd.DataFrame(rows)
-    baseline_mean = detail[detail.strategy == "Earliest Due Date"].harm.mean()
-    summary = detail.groupby("strategy", as_index=False).agg(
-        average_modeled_harm=("harm", "mean"),
-        average_late_fees=("late_fees", "mean"),
-        average_interest=("interest", "mean"),
-        average_critical_harm=("critical_harm", "mean"),
-        critical_consequence_count=("critical_count", "sum"),
-        average_unpaid=("unpaid", "mean"),
-        feasibility_rate=("feasible", "mean"),
-        average_cash_allocated=("allocated", "mean"),
-    )
-    summary["relative_harm_reduction_vs_earliest_due"] = (
-        baseline_mean - summary.average_modeled_harm
-    ) / max(baseline_mean, 1e-9)
-    EVALUATION_CACHE = (summary, detail)
-    return summary, detail
-
-
-def extraction_test_suite() -> tuple[pd.DataFrame, dict[str, float]]:
-    examples = [
-        (
-            "ComEd\nAmount Due: $148.60\nDue Date: 11/16/2026\nMinimum Payment: $25.00\nLate Fee: $18.00\nAPR: 18%\n5 day grace period",
-            {
-                "amount": 148.60,
-                "due_date": "2026-11-16",
-                "minimum_payment": 25.0,
-                "late_fee": 18.0,
-                "apr": 0.18,
-                "grace_days": 5,
-            },
-        ),
-        (
-            "Harbor Bank Card Statement\nBalance Due: $426.20\nPayment Due: November 28, 2026\nMinimum Payment: $45.00\nLate fee: $35.00\nInterest rate: 24.9%",
-            {
-                "amount": 426.20,
-                "due_date": "2026-11-28",
-                "minimum_payment": 45.0,
-                "late_fee": 35.0,
-                "apr": 0.249,
-            },
-        ),
-        (
-            "Clinic Invoice\nAmount Due $82.00\nDue: 12/02/2026\nPayment arrangement available by calling provider",
-            {"amount": 82.0, "due_date": "2026-12-02"},
-        ),
-        (
-            "Utility Statement\nAmount Due: $140 or $160\nDue Date: 11/30/2026\nLate fee: not shown",
-            {"amount": None, "due_date": "2026-11-30"},
-        ),
-        (
-            "Unusual account\nBalance Due: $0.00\nDue date: 13/45/2026\nMinimum Payment $0.00",
-            {"amount": 0.0, "due_date": None, "minimum_payment": 0.0},
-        ),
-    ]
-    rows = []
-    correct = total = 0
-    for i, (text, truth) in enumerate(examples, 1):
-        result = extract_bill_fields(text)["fields"]
-        for key, expected in truth.items():
-            got = result.get(key)
-            ok = got == expected
-            rows.append(
-                {
-                    "sample": i,
-                    "field": key,
-                    "expected": expected,
-                    "extracted": got,
-                    "correct": ok,
-                }
-            )
-            correct += int(ok)
-            total += 1
-    df = pd.DataFrame(rows)
-    return df, {"field_accuracy": correct / max(1, total), "fields_tested": total}
-
-
-# ------------------------------- reporting ---------------------------------
-def personal_report(account: AccountStore, days: int | None = 365) -> pd.DataFrame:
-    tx = account.transactions.copy()
-    if days is not None:
-        tx = tx[tx.date >= pd.Timestamp(AS_OF - dt.timedelta(days=days))]
-    tx["month"] = tx.date.dt.to_period("M").astype(str)
-    tx["income"] = np.where((tx.category == "Income") & (tx.amount > 0), tx.amount, 0)
-    tx["expense"] = np.where(
-        (tx.amount < 0) & (~tx.category.isin(["Transfers", "Income"])), -tx.amount, 0
-    )
-    out = tx.groupby("month", as_index=False).agg(
-        income=("income", "sum"), expenses=("expense", "sum")
-    )
-    out["net_cash_flow"] = out.income - out.expenses
-    balances = account.records["balance_history"].copy()
-    debts = account.records["debt_history"].copy()
-    balances["month"] = balances.month.dt.to_period("M").astype(str)
-    debts["month"] = debts.month.dt.to_period("M").astype(str)
-    out = out.merge(
-        balances[["month", "checking", "savings", "total_cash"]], on="month", how="left"
-    ).merge(
-        debts[["month", "total_debt", "Credit Card", "Auto Loan", "Student Loan"]],
-        on="month",
-        how="left",
-    )
-    hist = account.records["bill_history"].copy()
-    if not hist.empty:
-        hist["month"] = (
-            pd.to_datetime(hist.payment_date, errors="coerce")
-            .dt.to_period("M")
-            .astype(str)
-        )
-        late = (
-            hist[hist.status.str.contains("late", case=False, na=False)]
-            .groupby("month")
-            .size()
-            .rename("late_payments")
-            .reset_index()
-        )
-        out = out.merge(late, on="month", how="left")
-    if "late_payments" not in out:
-        out["late_payments"] = 0
-    out["late_payments"] = out.late_payments.fillna(0).astype(int)
-    return out
-
-
-def report_support_tables(account: AccountStore, days: int | None):
-    start = (
-        AS_OF - dt.timedelta(days=days) if days is not None else dt.date(2024, 11, 15)
-    )
-    cats = category_spending(account, start, AS_OF)
-    hist = account.records["bill_history"].copy()
-    if not hist.empty:
-        dates = pd.to_datetime(hist.payment_date, errors="coerce").dt.date
-        hist = hist[(dates.isna()) | (dates >= start)]
-    _score, factors, explanation = health_assessment(account)
-    return (
-        cats,
-        (
-            hist.sort_values("due_date", ascending=False).head(200)
-            if not hist.empty
-            else hist
-        ),
-        upcoming_frame(account),
-        factors,
-        financial_insights(account),
-        explanation,
-    )
-
-
-def export_personal_csv(account: AccountStore, days: int | None) -> str:
-    report = personal_report(account, days)
-    path = os.path.join(
-        tempfile.gettempdir(), f"solvra-personal-report-{uuid.uuid4().hex[:7]}.csv"
-    )
-    report.to_csv(path, index=False)
-    return path
-
-
-def export_category_csv(account: AccountStore, days: int | None) -> str:
-    start = (
-        AS_OF - dt.timedelta(days=days) if days is not None else dt.date(2024, 11, 15)
-    )
-    out = category_spending(account, start, AS_OF)
-    path = os.path.join(
-        tempfile.gettempdir(), f"solvra-category-report-{uuid.uuid4().hex[:7]}.csv"
-    )
-    out.to_csv(path, index=False)
-    return path
-
-
-def export_personal_pdf(account: AccountStore, days: int | None) -> str:
-    path = os.path.join(
-        tempfile.gettempdir(), f"solvra-personal-report-{uuid.uuid4().hex[:7]}.pdf"
-    )
-    try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-
-        c = canvas.Canvas(path, pagesize=letter)
-        y = 750
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(48, y, "Solvra — Synthetic personal financial report")
-        y -= 24
-        c.setFont("Helvetica", 9)
-        c.drawString(48, y, f"As of {AS_OF.isoformat()} | {DISCLAIMER}")
-        y -= 24
-        c.drawString(
-            48,
-            y,
-            f"Checking ${account.balance('Checking'):,.2f} | Savings ${account.balance('Savings'):,.2f} | Debt ${sum(account.debts().values()):,.2f}",
-        )
-        y -= 22
-        score, _, _health_text = health_assessment(account)
-        c.drawString(
-            48,
-            y,
-            f"Health index {score}/100 (transparent weighted prototype assessment; not credit score)",
-        )
-        y -= 16
-        c.drawString(
-            48, y, "Monthly cash flow, balances, debt trend, and late payment counts:"
-        )
-        y -= 15
-        for _, r in personal_report(account, days).tail(16).iterrows():
-            c.drawString(
-                48,
-                y,
-                f"{r['month']}: income ${r['income']:,.0f} | expenses ${r['expenses']:,.0f} | net ${r['net_cash_flow']:,.0f} | savings ${r['savings'] if pd.notna(r['savings']) else 0:,.0f} | debt ${r['total_debt'] if pd.notna(r['total_debt']) else 0:,.0f} | late bills {r['late_payments']}",
-            )
-            y -= 14
-            if y < 80:
-                c.showPage()
-                y = 750
-                c.setFont("Helvetica", 9)
-        if y < 180:
-            c.showPage()
-            y = 750
-            c.setFont("Helvetica", 9)
-        c.setFont("Helvetica-Bold", 11)
-        c.drawString(48, y, "Spending categories and upcoming obligations")
-        y -= 18
-        c.setFont("Helvetica", 9)
-        cats, history, upcoming, _factors, _insights, _explanation = (
-            report_support_tables(account, days)
-        )
-        for _, r in cats.head(10).iterrows():
-            c.drawString(48, y, f"{r['category']}: ${r['spending']:,.2f}")
-            y -= 13
-        for _, r in upcoming.head(9).iterrows():
-            if y < 70:
-                c.showPage()
-                y = 750
-                c.setFont("Helvetica", 9)
-            c.drawString(
-                48,
-                y,
-                f"Due {r['Due']}: {r['Bill']} ${r['Amount']:,.2f} ({r['Days']} days)",
-            )
-            y -= 13
-        c.drawString(
-            48,
-            max(50, y - 8),
-            f"Historical late payments recorded: {int(history.status.str.contains('late', case=False, na=False).sum())}",
-        )
-        c.save()
-    except Exception as e:
-        # Still provide a valid text report if reportlab isn't installed.
-        with open(path, "w") as f:
-            f.write(
-                f"Solvra financial report\n{DISCLAIMER}\n{e}\n"
-                + personal_report(account, days).to_string(index=False)
-            )
-    return path
-
-
-# ---------------------------- interface helpers -----------------------------
-def money(x):
+def money(x: float) -> str:
     return f"${float(x):,.2f}"
 
 
-def dashboard_kpis(account: AccountStore, days: int = 90) -> str:
-    checking = account.balance("Checking")
-    savings = account.balance("Savings")
-    debts = account.debts()
-    monthly = monthly_summary(account)
-    cur = monthly[monthly.month.dt.to_period("M") == pd.Period(AS_OF, freq="M")]
-    if cur.empty:
-        cur = monthly.tail(1)
-    mi = float(cur.income.iloc[0]) if not cur.empty else 0
-    me = float(cur.expenses.iloc[0]) if not cur.empty else 0
-    obligations = sum(b.amount for b in current_open_bills(account))
-    emergency = essential_monthly_expense(account)
-    score, _, _ = health_assessment(account)
-    items = [
-        ("Checking", money(checking)),
-        ("Savings", money(savings)),
-        ("Total available cash", money(checking + savings)),
-        ("Monthly income", money(mi)),
-        ("Monthly expenses", money(me)),
-        ("Remaining monthly cash flow", money(mi - me)),
-        ("Outstanding debt", money(sum(debts.values()))),
-        ("Upcoming obligations", money(obligations)),
-        ("Emergency savings", money(savings)),
-        ("Savings coverage", f"{savings/max(emergency,1):.1f} months"),
-        ("Health index", f"{score}/100"),
-    ]
-    return (
-        "<div class='kpi-grid'>"
-        + "".join(
-            f"<div class='kpi'><div class='kpi-label'>{a}</div><div class='kpi-value'>{b}</div></div>"
-            for a, b in items
-        )
-        + "</div>"
-    )
-
-
-def _period_start(series: pd.Series, days: int | None) -> pd.Series:
-    """Use daily bins for 30 days, weekly bins for 90 days, and months otherwise."""
-    if days is not None and days <= 30:
-        return series.dt.floor("D")
-    if days is not None and days <= 90:
-        return series.dt.to_period("W-SUN").dt.start_time
-    return series.dt.to_period("M").dt.start_time
-
-
-def _activity_for_range(account: AccountStore, days: int | None) -> pd.DataFrame:
-    tx = account.transactions.copy()
-    if days is not None:
-        cutoff = pd.Timestamp(AS_OF - dt.timedelta(days=days - 1))
-        tx = tx[(tx.date >= cutoff) & (tx.date <= pd.Timestamp(AS_OF))]
-    tx["income"] = np.where((tx.category == "Income") & (tx.amount > 0), tx.amount, 0.0)
-    tx["expenses"] = np.where(
-        (tx.amount < 0) & (~tx.category.isin(["Transfers", "Income"])), -tx.amount, 0.0
-    )
-    tx["period"] = _period_start(tx.date, days)
-    result = tx.groupby("period", as_index=False).agg(
-        income=("income", "sum"), expenses=("expenses", "sum")
-    )
-    result["net"] = result.income - result.expenses
-    return result.sort_values("period")
-
-
-def _cash_history_for_range(account: AccountStore, days: int | None) -> pd.DataFrame:
-    if days is None or days > 90:
-        history = account.records["balance_history"].copy()
-        if days is not None:
-            cutoff = pd.Timestamp(AS_OF - dt.timedelta(days=days - 1))
-            before = history[history.month < cutoff].tail(1)
-            after = history[history.month >= cutoff]
-            history = (
-                pd.concat([before, after]).drop_duplicates("month").sort_values("month")
-            )
-        return history.rename(columns={"month": "date"})
-
-    first_day = AS_OF - dt.timedelta(days=days - 1)
-    dates = pd.date_range(first_day, AS_OF, freq="D")
-    tx = account.transactions.copy()
-    result = pd.DataFrame({"date": dates})
-    for ledger_name, column in (("Checking", "checking"), ("Savings", "savings")):
-        ledger = tx[tx.account == ledger_name]
-        starting = (
-            account.records["opening"][ledger_name]
-            + ledger.loc[ledger.date.dt.date < first_day, "amount"].sum()
-        )
-        daily = (
-            ledger[ledger.date.dt.date >= first_day]
-            .groupby(ledger.date.dt.floor("D"))
-            .amount.sum()
-        )
-        result[column] = float(starting) + result.date.map(daily).fillna(0).cumsum()
-    result["total_cash"] = result.checking + result.savings
-    return result
-
-
-def _debt_history_for_range(account: AccountStore, days: int | None) -> pd.DataFrame:
-    history = account.records["debt_history"].copy()
-    if days is not None and days <= 90:
-        cutoff = pd.Timestamp(AS_OF - dt.timedelta(days=days - 1))
-        before = history[history.month < cutoff].tail(1)
-        after = history[history.month >= cutoff]
-        history = (
-            pd.concat([before, after]).drop_duplicates("month").sort_values("month")
-        )
-    elif days is not None:
-        cutoff = (
-            pd.Timestamp(AS_OF - dt.timedelta(days=days - 1))
-            .to_period("M")
-            .to_timestamp()
-        )
-        before = history[history.month < cutoff].tail(1)
-        history = pd.concat([before, history[history.month >= cutoff]])
-    return history.rename(columns={"month": "date"})
-
-
-def dashboard_charts(account: AccountStore, range_name: str):
-    """Return six charts whose filters use exact dates and whose bins match the selected range."""
-    days = {
-        "Last 30 days": 30,
-        "Last 90 days": 90,
-        "Last 6 months": 183,
-        "Last 12 months": 365,
-        "Entire 24-month history": None,
-    }.get(range_name, 90)
-    start = (
-        AS_OF - dt.timedelta(days=days - 1)
-        if days is not None
-        else dt.date(2024, 11, 15)
-    )
-    activity = _activity_for_range(account, days)
-    categories = category_spending(account, start, AS_OF)
-    palette = [
-        "#147D73",
-        "#E27B60",
-        "#5475C8",
-        "#9A83C8",
-        "#D3A34F",
-        "#5E9BA3",
-        "#C96A88",
-    ]
-
-    cashflow = go.Figure()
-    cashflow.add_trace(
-        go.Bar(
-            x=activity.period, y=activity.income, name="Income", marker_color="#168C7E"
-        )
-    )
-    cashflow.add_trace(
-        go.Bar(
-            x=activity.period,
-            y=activity.expenses,
-            name="Expenses",
-            marker_color="#E27B60",
-        )
-    )
-    cashflow.add_trace(
-        go.Scatter(
-            x=activity.period,
-            y=activity.net,
-            name="Net",
-            mode="lines+markers",
-            line={"color": "#526BC4", "width": 2.5},
-            marker={"size": 6},
-            yaxis="y2",
-        )
-    )
-    cashflow.update_layout(
-        title=f"Income, expenses & net · {range_name.lower()}",
-        template="plotly_white",
-        barmode="group",
-        height=340,
-        margin={"l": 24, "r": 24, "t": 62, "b": 35},
-        legend={"orientation": "h", "y": 1.12, "x": 0},
-        yaxis={
-            "title": "Income / expenses",
-            "tickprefix": "$",
-            "gridcolor": "#E8EDF2",
-            "rangemode": "tozero",
-        },
-        yaxis2={
-            "title": "Net",
-            "overlaying": "y",
-            "side": "right",
-            "showgrid": False,
-            "tickprefix": "$",
-        },
-        hovermode="x unified",
-        font={"family": "Inter, sans-serif", "color": "#29394D"},
-    )
-
-    if categories.empty:
-        spending_pie = go.Figure().add_annotation(
-            text="No recorded spending in this period", showarrow=False
-        )
-    else:
-        spending_pie = px.pie(
-            categories,
-            names="category",
-            values="spending",
-            hole=0.58,
-            color_discrete_sequence=palette,
-            title="Spending mix",
-        )
-        spending_pie.update_traces(
-            textposition="inside",
-            textinfo="percent",
-            hovertemplate="%{label}<br>$%{value:,.0f} · %{percent}<extra></extra>",
-        )
-        spending_pie.add_annotation(
-            text=f"{money(categories.spending.sum())}<br><sup>total</sup>",
-            showarrow=False,
-            font={"size": 17, "color": "#203247"},
-        )
-    spending_pie.update_layout(
-        template="plotly_white",
-        height=340,
-        margin={"l": 14, "r": 14, "t": 56, "b": 18},
-        legend={"orientation": "h", "y": -0.08},
-        font={"family": "Inter, sans-serif", "color": "#29394D"},
-    )
-
-    cash_history = _cash_history_for_range(account, days)
-    cash_chart = go.Figure()
-    cash_chart.add_trace(
-        go.Scatter(
-            x=cash_history.date,
-            y=cash_history.checking,
-            name="Checking",
-            mode="lines",
-            line={"color": "#5475C8", "width": 2.5},
-            fill="tozeroy",
-            fillcolor="rgba(84,117,200,.09)",
-        )
-    )
-    cash_chart.add_trace(
-        go.Scatter(
-            x=cash_history.date,
-            y=cash_history.savings,
-            name="Savings",
-            mode="lines",
-            line={"color": "#168C7E", "width": 2.5},
-            fill="tozeroy",
-            fillcolor="rgba(22,140,126,.08)",
-        )
-    )
-    cash_chart.update_layout(
-        title="Checking & savings balances",
-        template="plotly_white",
-        height=310,
-        margin={"l": 24, "r": 15, "t": 56, "b": 32},
-        hovermode="x unified",
-        yaxis={"tickprefix": "$", "gridcolor": "#E8EDF2", "rangemode": "tozero"},
-        legend={"orientation": "h", "y": 1.1},
-        font={"family": "Inter, sans-serif", "color": "#29394D"},
-    )
-
-    debt_history = _debt_history_for_range(account, days)
-    debt_chart = go.Figure()
-    for column, color in (
-        ("Credit Card", "#E27B60"),
-        ("Auto Loan", "#5475C8"),
-        ("Student Loan", "#9A83C8"),
-    ):
-        debt_chart.add_trace(
-            go.Scatter(
-                x=debt_history.date,
-                y=debt_history[column],
-                name=column,
-                mode="lines+markers",
-                line={"color": color, "width": 2.5},
-                marker={"size": 5},
-            )
-        )
-    debt_chart.update_layout(
-        title="Outstanding debt by account",
-        template="plotly_white",
-        height=310,
-        margin={"l": 24, "r": 15, "t": 56, "b": 32},
-        hovermode="x unified",
-        yaxis={"tickprefix": "$", "gridcolor": "#E8EDF2", "rangemode": "tozero"},
-        legend={"orientation": "h", "y": 1.1},
-        font={"family": "Inter, sans-serif", "color": "#29394D"},
-    )
-
-    if categories.empty:
-        category_bars = go.Figure().add_annotation(
-            text="No recorded spending in this period", showarrow=False
-        )
-    else:
-        category_bars = px.bar(
-            categories.sort_values("spending"),
-            x="spending",
-            y="category",
-            orientation="h",
-            color="category",
-            color_discrete_sequence=palette,
-            title="Category totals",
-        )
-        category_bars.update_traces(hovertemplate="%{y}<br>$%{x:,.2f}<extra></extra>")
-    category_bars.update_layout(
-        template="plotly_white",
-        height=310,
-        showlegend=False,
-        margin={"l": 12, "r": 18, "t": 56, "b": 26},
-        xaxis={"tickprefix": "$", "gridcolor": "#E8EDF2", "rangemode": "tozero"},
-        font={"family": "Inter, sans-serif", "color": "#29394D"},
-    )
-
-    expenses = account.transactions.copy()
-    if days is not None:
-        expenses = expenses[
-            (expenses.date.dt.date >= start) & (expenses.date.dt.date <= AS_OF)
-        ]
-    expenses = expenses[
-        (expenses.amount < 0) & (~expenses.category.isin(["Transfers", "Income"]))
-    ].copy()
-    essentials = {
-        "Housing",
-        "Utilities",
-        "Groceries",
-        "Transportation",
-        "Insurance",
-        "Debt payments",
-        "Medical",
-    }
-    expenses["period"] = _period_start(expenses.date, days)
-    expenses["kind"] = np.where(
-        expenses.category.isin(essentials), "Essential", "Discretionary"
-    )
-    stacked = expenses.groupby(["period", "kind"], as_index=False).amount.sum()
-    stacked["spending"] = -stacked.amount
-    essential_chart = go.Figure()
-    for kind, color in (("Essential", "#168C7E"), ("Discretionary", "#D3A34F")):
-        part = stacked[stacked.kind == kind]
-        essential_chart.add_trace(
-            go.Bar(x=part.period, y=part.spending, name=kind, marker_color=color)
-        )
-    essential_chart.update_layout(
-        title="Essential vs discretionary spending",
-        template="plotly_white",
-        barmode="stack",
-        height=310,
-        margin={"l": 24, "r": 15, "t": 56, "b": 32},
-        yaxis={"tickprefix": "$", "gridcolor": "#E8EDF2", "rangemode": "tozero"},
-        legend={"orientation": "h", "y": 1.1},
-        font={"family": "Inter, sans-serif", "color": "#29394D"},
-    )
-    return (
-        cashflow,
-        spending_pie,
-        cash_chart,
-        debt_chart,
-        category_bars,
-        essential_chart,
-    )
-
-
-def financial_insights(account: AccountStore) -> str:
-    tx = account.transactions.copy()
-    insights = []
-    cur_start, cur_end = _last_month_bounds()
-    prev_end = cur_start - dt.timedelta(days=1)
-    prev_start = prev_end.replace(day=1)
-    for cat in ["Groceries", "Utilities", "Housing", "Transportation"]:
-        vals = []
-        for a, b in [(prev_start, prev_end), (cur_start, cur_end)]:
-            mask = (
-                (tx.date.dt.date >= a)
-                & (tx.date.dt.date <= b)
-                & (tx.category == cat)
-                & (tx.amount < 0)
-            )
-            vals.append(-tx.loc[mask, "amount"].sum())
-        if vals[0] > 0:
-            pct = (vals[1] - vals[0]) / vals[0] * 100
-            insights.append(
-                f"{cat} spending was ${vals[1]:,.0f} last month, {abs(pct):.0f}% {'higher' if pct>=0 else 'lower'} than the prior month (${vals[0]:,.0f})."
-            )
-    # Small, explainable scikit-learn linear trend over the six most recent utility-spend months.
-    recent = tx[
-        (tx.category == "Utilities") & (tx.amount < 0) & (tx.date.dt.date <= AS_OF)
-    ].copy()
-    recent["month"] = recent.date.dt.to_period("M").dt.to_timestamp()
-    util = recent.groupby("month").amount.sum().abs().tail(6)
-    if len(util) >= 3:
-        model = LinearRegression().fit(np.arange(len(util)).reshape(-1, 1), util.values)
-        slope = float(model.coef_[0])
-        if abs(slope) >= 2:
-            insights.append(
-                f"A simple six-month linear trend estimates utility spending is changing by about ${abs(slope):,.0f}/month ({'up' if slope>0 else 'down'}); this is descriptive, not a forecast."
-            )
-    hist = account.records["balance_history"].tail(4)
-    if len(hist) >= 2:
-        delta = hist.savings.iloc[-1] - hist.savings.iloc[0]
-        insights.append(
-            f"Savings changed by ${delta:,.0f} across the last four monthly snapshots."
-        )
-    debt = account.records["debt_history"]
-    if len(debt) >= 7:
-        d = debt.iloc[-7].total_debt - debt.iloc[-1].total_debt
-        insights.append(
-            f"Recorded total debt {'fell' if d>=0 else 'rose'} by ${abs(d):,.0f} over six months."
-        )
-    months = account.balance("Savings") / max(essential_monthly_expense(account), 1)
-    insights.append(
-        f"Current synthetic savings balance covers about {months:.1f} months of recorded essential expenses at the recent six-month average."
-    )
-    return "\n".join(f"• {x}" for x in insights)
-
-
-def bill_df(account: AccountStore) -> pd.DataFrame:
-    rows = []
-    for b in account.bills:
-        rows.append(
-            {
-                "ID": b.bill_id,
-                "Bill": b.name,
-                "Provider": b.provider,
-                "Category": b.category,
-                "Amount": b.amount,
-                "Due date": b.effective_due.isoformat(),
-                "Minimum": b.minimum_payment,
-                "Late fee": b.late_fee,
-                "APR": b.apr,
-                "Grace days": b.grace_days,
-                "Partial allowed": b.partial_allowed,
-                "Confirmed extension": b.confirmed_extension,
-                "Extension terms": b.extension_terms,
-                "Status": b.status,
-                "Consequence": b.consequence,
-                "Data source": b.source,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def render_plan(result: PlanResult, scenario_bills: list[Bill] | None = None) -> str:
-    byid = {
-        b.bill_id: b
-        for b in (
-            scenario_bills if scenario_bills is not None else current_open_bills(DEMO)
-        )
-    }
-    lines = [
-        f"### {result.strategy}",
-        f"**Total allocated:** ${result.total_allocated:,.2f} &nbsp; **Unallocated cash:** ${result.remaining_cash:,.2f} &nbsp; **Unpaid obligations:** ${result.unpaid:,.2f}",
-        f"**Modeled harm:** ${result.harm['total_harm']:,.2f} ($-equivalent) — late fees ${result.harm['late_fees']:,.2f}; estimated interest ${result.harm['interest']:,.2f}; consequence-weight exposure ${result.harm['critical_harm']:,.2f}.",
-        "#### Payment schedule",
-    ]
-    if not result.payments:
-        lines.append(
-            "No payments allocated; confirm cash inputs, available funds, and bill terms."
-        )
-    else:
-        for p in sorted(result.payments, key=lambda x: (x["date"], x["bill"])):
-            b = byid.get(p["bill_id"])
-            name = p["bill"]
-            due = b.effective_due.isoformat() if b else "scenario due date"
-            lines.append(
-                f"- **{p['date']} — {name}: ${p['amount']:,.2f}** (due {due}; provider: {p['provider']})."
-            )
-    lines.append("#### Why / remaining risks")
-    lines.extend(
-        f"- {x}" for x in result.explanation[: min(12, len(result.explanation))]
-    )
-    lines.append(
-        "**Assumptions:** one-time late fee is prorated by unpaid fraction at the due date plus grace period; APR is simple daily interest on unpaid balance over the simulation horizon; consequence weights are explicit dollar-equivalent user-model inputs, not real loss estimates. Confirmed extensions only are treated as dates. Provider rules, legal protections, reporting, and service actions are uncertain. No payment is sent."
-    )
-    return "\n".join(lines)
-
-
-def provider_message(bill: Bill) -> str:
-    return (
-        f"Hello {bill.provider}, I am contacting you about my {bill.name} bill of ${bill.amount:,.2f}, due {bill.effective_due:%B %d, %Y}. "
-        "I am reviewing my available funds and want to avoid missing a payment. Could you tell me whether a short extension, payment arrangement, or partial payment is available, and confirm any fee, interest, service, or reporting consequences in writing? "
-        "I will only treat a change as confirmed after you approve the terms. Thank you."
-    )
-
-
-# ----------------------------- gradio interface ----------------------------
-CUSTOM_CSS = """
-:root {
-  --solvra-ink: #203247;
-  --solvra-muted: #6b7888;
-  --solvra-teal: #167d73;
-  --solvra-paper: #f3f6f7;
-  --solvra-line: #e4eaed;
+APP_CSS = """
+:root, body, gradio-app, .gradio-container { color-scheme: light !important; }
+body, gradio-app, .gradio-container, .main, .wrap.app {
+  background: #eef3f5 !important;
 }
 .gradio-container {
-  max-width: 1480px !important;
-  background: var(--solvra-paper) !important;
-  color: var(--solvra-ink) !important;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif !important;
+  max-width: 1200px !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  padding: clamp(10px, 2.2vw, 18px) clamp(8px, 2vw, 20px) 28px !important;
+  color: #0f2433 !important;
+  font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, ui-sans-serif, system-ui, sans-serif !important;
 }
-#hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 25px 30px;
-  margin: 0 0 15px;
-  border: 1px solid rgba(255,255,255,.13);
-  border-radius: 20px;
-  color: #fff;
-  background: linear-gradient(118deg, #18324a 0%, #1c5d61 63%, #258a78 100%);
-  box-shadow: 0 12px 28px rgba(28, 59, 69, .12);
+.gradio-container .html-container, .gradio-container .prose { color: #0f2433; }
+.gradio-container .main.app, .gradio-container .main.fillable { padding: 0 !important; }
+.gradio-container .html-container { padding: 0 !important; }
+#sv-main { gap: 18px !important; align-items: stretch; }
+#sv-main > .column { gap: 12px !important; }
+#sv-reset button, button#sv-reset {
+  background: #ffffff !important; color: #334155 !important; border: 1px solid #cbd5df !important;
+  font-weight: 600 !important; box-shadow: none !important;
 }
-#hero .hero-eyebrow { margin-bottom: 5px; color: #b9e7dc; font-size: 11px; font-weight: 750; letter-spacing: .15em; }
-#hero h1 { margin: 0; font-size: 35px; line-height: 1.12; letter-spacing: -.045em; }
-#hero p { margin: 8px 0 0; color: rgba(255,255,255,.82); font-size: 14px; }
-#hero .hero-tag {
-  flex: 0 0 auto;
-  padding: 10px 14px;
-  border: 1px solid rgba(255,255,255,.24);
-  border-radius: 12px;
-  color: #fff;
-  background: rgba(255,255,255,.10);
-  font-size: 11px;
-  font-weight: 750;
-  letter-spacing: .08em;
-  text-align: right;
+#sv-reset button:hover, button#sv-reset:hover { background: #f1f5f9 !important; }
+footer { opacity: .85; }
+
+/* ---------- header ---------- */
+.sv-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 18px 22px; border-radius: 18px;
+  background: linear-gradient(115deg, #0f2a3f 0%, #134e5e 60%, #0f766e 100%);
+  box-shadow: 0 10px 24px rgba(15, 42, 63, .18);
 }
-#hero .hero-tag span { display: block; margin-top: 4px; color: rgba(255,255,255,.78); font-size: 12px; font-weight: 500; letter-spacing: 0; }
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 12px; }
-.kpi {
-  min-height: 90px;
-  padding: 16px 17px;
-  border: 1px solid var(--solvra-line);
-  border-radius: 15px;
-  background: #fff;
-  box-shadow: 0 3px 12px rgba(25,48,63,.035);
-  transition: transform .18s ease, box-shadow .18s ease;
+.sv-brand { display: flex; align-items: center; gap: 14px; }
+.sv-logo {
+  flex: 0 0 auto; width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center;
+  background: rgba(255,255,255,.16); color: #ffffff; font-size: 22px; font-weight: 800;
 }
-.kpi:hover { transform: translateY(-2px); box-shadow: 0 8px 18px rgba(25,48,63,.08); }
-.kpi-label { color: var(--solvra-muted); font-size: 11px; font-weight: 700; letter-spacing: .055em; text-transform: uppercase; }
-.kpi-value { margin-top: 8px; color: var(--solvra-ink); font-size: 22px; font-weight: 760; letter-spacing: -.025em; }
-.disclaimer { padding: 8px 3px 12px; color: var(--solvra-muted); font-size: 12px; }
-.gradio-container button.primary { border: 0 !important; background: var(--solvra-teal) !important; box-shadow: 0 3px 8px rgba(22,125,115,.15); }
-.gradio-container button.primary:hover { background: #116a62 !important; }
-.gradio-container button.stop { border-radius: 10px !important; }
-.gradio-container [role="tab"] { font-weight: 650 !important; }
-.gradio-container .block, .gradio-container .form { border-color: var(--solvra-line) !important; }
-@media (max-width: 720px) {
-  #hero { align-items: flex-start; flex-direction: column; padding: 21px; }
-  #hero .hero-tag { text-align: left; }
-  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .kpi-value { font-size: 19px; }
+.sv-header h1 { margin: 0 !important; color: #ffffff !important; font-size: 26px !important; line-height: 1.1 !important; font-weight: 800 !important; letter-spacing: -.02em; }
+.sv-header p { margin: 3px 0 0 !important; color: #d6efea !important; font-size: 14px !important; }
+.sv-badge {
+  padding: 7px 12px; border-radius: 999px; border: 1px solid rgba(255,255,255,.3);
+  background: rgba(255,255,255,.12); color: #ffffff; font-size: 12.5px; font-weight: 600; white-space: nowrap;
+}
+
+/* ---------- live voice card ---------- */
+.sv-live {
+  --lvl: 0;
+  display: flex; flex-direction: column; gap: 12px;
+  height: min(760px, calc(100vh - 190px)); min-height: 540px;
+  padding: 18px; border-radius: 18px; background: #ffffff; border: 1px solid #d5dee5;
+  box-shadow: 0 6px 18px rgba(15, 36, 51, .06); color: #0f2433; box-sizing: border-box;
+}
+.sv-stage { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 6px 4px 10px; border-bottom: 1px solid #e5ecf1; }
+.sv-orb {
+  position: relative; width: 128px; height: 128px; margin: 4px 0 6px; border: 0; padding: 0;
+  border-radius: 50%; cursor: pointer; background: transparent; outline-offset: 6px;
+}
+.sv-orb:focus-visible { outline: 3px solid #0f766e; }
+.sv-live.has-chat .sv-stage { gap: 4px; padding-bottom: 8px; }
+.sv-live.has-chat .sv-orb { width: 96px; height: 96px; margin: 0 0 2px; }
+.sv-live.has-chat .sv-core svg { width: 32px; height: 32px; }
+.sv-live.has-chat .sv-orb-label { font-size: 18px; }
+.sv-core {
+  position: absolute; inset: 14px; border-radius: 50%; display: grid; place-items: center; z-index: 2;
+  background: radial-gradient(circle at 32% 28%, #5eead4 0%, #14b8a6 32%, #0f766e 70%, #134e5e 100%);
+  box-shadow: 0 10px 26px rgba(15, 118, 110, .35), inset 0 -6px 14px rgba(0,0,0,.18);
+  transition: transform .15s ease;
+  transform: scale(calc(1 + var(--lvl) * .12));
+}
+.sv-core svg { width: 40px; height: 40px; fill: #ffffff; }
+.sv-orb:hover .sv-core { filter: brightness(1.06); }
+.sv-ring { position: absolute; inset: 14px; border-radius: 50%; border: 3px solid rgba(20, 184, 166, .45); opacity: 0; z-index: 1; }
+.sv-live[data-phase="listening"] .sv-ring { animation: sv-pulse 1.8s ease-out infinite; }
+.sv-live[data-phase="listening"] .sv-ring2 { animation-delay: .9s; }
+.sv-live[data-phase="speaking"] .sv-ring { border-color: rgba(59, 130, 246, .45); animation: sv-pulse 1.1s ease-out infinite; }
+.sv-live[data-phase="speaking"] .sv-ring2 { animation-delay: .55s; }
+.sv-live[data-phase="speaking"] .sv-core { background: radial-gradient(circle at 32% 28%, #93c5fd 0%, #3b82f6 38%, #1d4ed8 75%, #1e3a8a 100%); }
+.sv-live[data-phase="thinking"] .sv-core { animation: sv-think 1.2s ease-in-out infinite; }
+@keyframes sv-pulse { 0% { transform: scale(1); opacity: .9; } 100% { transform: scale(1.55); opacity: 0; } }
+@keyframes sv-think { 0%, 100% { transform: scale(.94); filter: brightness(.95); } 50% { transform: scale(1.03); filter: brightness(1.12); } }
+.sv-orb-label { font-size: 20px; font-weight: 800; color: #0f2433; letter-spacing: -.01em; }
+.sv-status { max-width: 520px; font-size: 14.5px; line-height: 1.45; color: #475569; min-height: 21px; }
+.sv-live.has-error .sv-status { color: #b42318; font-weight: 600; }
+.sv-caption { max-width: 560px; min-height: 22px; font-size: 16px; font-style: italic; color: #0f766e; }
+.sv-live:not(.is-live) .sv-caption { display: none; }
+.sv-end {
+  display: none; margin-top: 4px; padding: 7px 16px; border-radius: 999px; cursor: pointer;
+  border: 1px solid #f1b8b4; background: #fff5f4; color: #b42318; font-weight: 700; font-size: 13.5px;
+}
+.sv-live.is-live .sv-end { display: inline-block; }
+.sv-end:hover { background: #fee4e2; }
+
+.sv-log { flex: 1 1 auto; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 4px 4px 2px; }
+.sv-msg { max-width: 86%; padding: 10px 14px; border-radius: 16px; font-size: 15px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+.sv-bot { align-self: flex-start; background: #f1f5f9; color: #0f2433; border: 1px solid #e2e8f0; border-bottom-left-radius: 5px; }
+.sv-user { align-self: flex-end; background: #0f766e; color: #ffffff; border-bottom-right-radius: 5px; }
+
+.sv-confirm { display: none; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; background: #fff8e6; border: 1px solid #f5d48a; color: #7a4b00; font-size: 14px; font-weight: 600; }
+.sv-confirm.show { display: flex; }
+.sv-confirm span { margin-right: auto; }
+.sv-confirm button { padding: 6px 14px; border-radius: 999px; cursor: pointer; font-weight: 700; font-size: 13.5px; border: 1px solid transparent; }
+.sv-confirm .sv-yes { background: #0f766e; color: #ffffff; }
+.sv-confirm .sv-no { background: #ffffff; color: #334155; border-color: #cbd5df; }
+
+.sv-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.sv-chip {
+  padding: 7px 12px; border-radius: 999px; cursor: pointer; font-size: 13.5px; font-weight: 600;
+  border: 1px solid #bfd9d5; background: #effaf8; color: #0f5e57;
+}
+.sv-chip:hover { background: #dff4f0; }
+.sv-form { display: flex; gap: 8px; }
+.sv-form input {
+  flex: 1 1 auto; min-width: 0; padding: 12px 14px; border-radius: 12px; font-size: 15px;
+  border: 1px solid #cbd5df; background: #ffffff; color: #0f2433; outline: none;
+}
+.sv-form input::placeholder { color: #7b8794; }
+.sv-form input:focus { border-color: #0f766e; box-shadow: 0 0 0 3px rgba(15, 118, 110, .15); }
+.sv-form button {
+  padding: 0 20px; border: 0; border-radius: 12px; cursor: pointer; font-size: 15px; font-weight: 700;
+  background: #0f766e; color: #ffffff;
+}
+.sv-form button:hover { background: #0b5f59; }
+
+/* ---------- account panel ---------- */
+.sv-panel { padding: 18px; border-radius: 18px; background: #ffffff; border: 1px solid #d5dee5; box-shadow: 0 6px 18px rgba(15, 36, 51, .06); color: #0f2433; }
+.sv-panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.sv-panel h3 { margin: 0 !important; font-size: 18px !important; font-weight: 800 !important; color: #0f2433 !important; }
+.sv-panel h4 { margin: 18px 0 8px !important; font-size: 13px !important; font-weight: 800 !important; color: #475569 !important; text-transform: uppercase; letter-spacing: .06em; }
+.sv-muted { color: #64748b; font-size: 12.5px; }
+.sv-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.sv-tile { padding: 12px 13px; border-radius: 13px; background: #f6f9fb; border: 1px solid #e2e8f0; }
+.sv-tile-label { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+.sv-tile-value { margin-top: 4px; font-size: 20px; font-weight: 800; color: #0f2433; letter-spacing: -.01em; }
+.sv-tile-value.sv-debt { color: #b42318; }
+.sv-bills { list-style: none; margin: 0 !important; padding: 0 2px 0 0 !important; display: flex; flex-direction: column; gap: 6px;
+  max-height: max(230px, calc(100vh - 520px)); overflow-y: auto; }
+.sv-bills li { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 !important; padding: 9px 11px; border-radius: 11px; border: 1px solid #e8eef2; background: #ffffff; }
+.sv-bill-name { font-weight: 700; font-size: 14.5px; color: #0f2433; }
+.sv-bill-meta { font-size: 12.5px; color: #64748b; }
+.sv-bill-amt { font-weight: 800; font-size: 14.5px; color: #0f2433; white-space: nowrap; }
+.sv-soon { color: #b45309; font-weight: 700; }
+.sv-disclaimer { margin-top: 2px; text-align: center; font-size: 12.5px; color: #64748b; }
+
+@media (max-width: 760px) {
+  .sv-live, .sv-panel { padding: 14px; }
+  .sv-header { padding: 14px 16px; }
+  .sv-header h1 { font-size: 22px !important; }
+  .sv-live { height: auto; min-height: 0; }
+  .sv-bills { max-height: none; }
+  .sv-log { max-height: 46vh; }
+  .sv-orb { width: 112px; height: 112px; }
+  .sv-msg { max-width: 94%; }
+}
+"""
+
+# Removes the "dark" class Gradio adds when the operating system uses dark mode. The theme
+# below also maps every dark-mode color to its light value, so even if the class comes back
+# text never ends up light-on-light (that is what made tabs and labels invisible before).
+FORCE_LIGHT_JS = """
+() => {
+  document.documentElement.classList.remove('dark');
+  if (document.body) document.body.classList.remove('dark');
 }
 """
 
 
-def launch_app(share: bool | None = None):
+def light_only_theme():
     import gradio as gr
 
-    share = (
-        ("google.colab" in str(getattr(__import__("sys"), "modules", {})))
-        if share is None
-        else share
+    theme = gr.themes.Soft(primary_hue="teal", neutral_hue="slate", radius_size="lg")
+    for name in list(vars(theme)):
+        if name.endswith("_dark") and hasattr(theme, name[: -len("_dark")]):
+            setattr(theme, name, getattr(theme, name[: -len("_dark")]))
+    return theme
+
+
+HEADER_HTML = f"""
+<header class="sv-header">
+  <div class="sv-brand">
+    <div class="sv-logo">S</div>
+    <div><h1>Solvra</h1><p>Talk to your money. Ask about bills, balances and what to pay first.</p></div>
+  </div>
+  <div class="sv-badge">Demo account · {AS_OF:%b} {AS_OF.day}, {AS_OF.year}</div>
+</header>
+"""
+
+_MIC_SVG = (
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0'
+    " 7 7 0 0 1-6 6.93V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-2.07A7 7 0 0 1 5 12a1 1 0 1 1 2 0 5 5 0 0 0 10 0Z\"/></svg>"
+)
+
+LIVE_SUGGESTIONS = [
+    "How much money do I have?",
+    "What bills are due this week?",
+    "What should I pay first?",
+    "How much did I spend last month?",
+]
+
+LIVE_HTML = (
+    '<div class="sv-live" data-phase="idle">'
+    '<div class="sv-stage">'
+    '<button id="sv-orb" class="sv-orb" type="button" aria-label="Start live voice chat">'
+    '<span class="sv-ring sv-ring1"></span><span class="sv-ring sv-ring2"></span>'
+    f'<span class="sv-core">{_MIC_SVG}</span></button>'
+    '<div id="sv-orb-label" class="sv-orb-label">Speak live</div>'
+    '<div id="sv-status" class="sv-status">Tap the button and just start talking. Solvra listens, then answers out loud.</div>'
+    '<div id="sv-caption" class="sv-caption" aria-live="polite"></div>'
+    '<button id="sv-end" class="sv-end" type="button">End live chat</button>'
+    "</div>"
+    '<div id="sv-log" class="sv-log" aria-live="polite">'
+    '<div class="sv-msg sv-bot">Hi! I\'m Solvra. Tap <b>Speak live</b> and ask me anything about this account, '
+    "like what's due this week or which bills to pay first. You can also type below.</div>"
+    "</div>"
+    '<div id="sv-confirm" class="sv-confirm"><span>Waiting for your OK. Say yes or no.</span>'
+    '<button type="button" class="sv-yes" data-answer="Yes">Yes, do it</button>'
+    '<button type="button" class="sv-no" data-answer="No">No, cancel</button></div>'
+    '<div class="sv-chips">'
+    + "".join(
+        f'<button type="button" class="sv-chip">{q}</button>' for q in LIVE_SUGGESTIONS
     )
-    theme = gr.themes.Soft(
-        primary_hue="teal",
-        secondary_hue="orange",
-        neutral_hue="slate",
-        radius_size="lg",
-        spacing_size="md",
-        font=gr.themes.LocalFont("Inter", weights=(400, 600, 700)),
+    + "</div>"
+    '<form id="sv-form" class="sv-form" autocomplete="off">'
+    '<input id="sv-input" type="text" placeholder="Or type a question..." aria-label="Type a question" />'
+    '<button type="submit">Send</button></form>'
+    "</div>"
+)
+
+LIVE_JS = r"""
+const root = element.querySelector('.sv-live');
+const $ = (id) => element.querySelector('#' + id);
+const orb = $('sv-orb'), orbLabel = $('sv-orb-label'), statusEl = $('sv-status');
+const caption = $('sv-caption'), log = $('sv-log'), form = $('sv-form'), input = $('sv-input');
+const endBtn = $('sv-end'), confirmBar = $('sv-confirm');
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const IDLE_TEXT = 'Tap the button and just start talking. Solvra listens, then answers out loud.';
+const LABELS = { idle: 'Speak live', listening: 'Listening...', thinking: 'Thinking...', speaking: 'Speaking...' };
+const S = {
+  live: false, phase: 'idle', pending: null, last: '', mode: SR ? 'browser' : 'recorder',
+  rec: null, recorder: null, stream: null, ctx: null, timer: null, listenId: 0,
+  busy: false, quiet: 0, failures: 0, voice: null, speakToken: 0, discard: false,
+};
+
+function setPhase(phase, text) {
+  S.phase = phase;
+  root.dataset.phase = phase;
+  root.classList.toggle('is-live', S.live);
+  orbLabel.textContent = LABELS[phase] || 'Speak live';
+  statusEl.textContent = text || '';
+  orb.setAttribute('aria-label', phase === 'idle' ? 'Start live voice chat'
+    : phase === 'speaking' ? 'Interrupt and speak' : 'End live voice chat');
+  if (phase !== 'listening') root.style.setProperty('--lvl', 0);
+}
+function addMsg(who, text) {
+  const div = document.createElement('div');
+  div.className = 'sv-msg sv-' + who;
+  div.textContent = text;
+  log.appendChild(div);
+  root.classList.add('has-chat');
+  log.scrollTop = log.scrollHeight;
+  requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+}
+function showConfirm() { confirmBar.classList.toggle('show', !!S.pending); }
+
+/* ---------- speaking (browser text-to-speech) ---------- */
+function pickVoice() {
+  if (!('speechSynthesis' in window)) return;
+  const english = speechSynthesis.getVoices().filter((v) => /^en([-_]|$)/i.test(v.lang));
+  const preferred = [/Google US English/i, /Natural/i, /Neural/i, /Samantha/i, /Aria/i, /Jenny/i, /Ava/i, /Zira/i, /Google UK English Female/i];
+  for (const pattern of preferred) {
+    const match = english.find((v) => pattern.test(v.name));
+    if (match) { S.voice = match; return; }
+  }
+  S.voice = english.find((v) => /en[-_]US/i.test(v.lang)) || english[0] || null;
+}
+if ('speechSynthesis' in window) {
+  pickVoice();
+  speechSynthesis.addEventListener('voiceschanged', pickVoice);
+}
+function stopSpeaking() {
+  S.speakToken += 1;
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+}
+function speak(text) {
+  return new Promise((resolve) => {
+    if (!('speechSynthesis' in window) || !text) { resolve(); return; }
+    stopSpeaking();
+    const token = S.speakToken;
+    const parts = text.split(/(?<=[.!?])\s+/).filter(Boolean);
+    let index = 0;
+    const next = () => {
+      if (token !== S.speakToken || index >= parts.length) { resolve(); return; }
+      const utterance = new SpeechSynthesisUtterance(parts[index++]);
+      if (S.voice) { utterance.voice = S.voice; utterance.lang = S.voice.lang; } else { utterance.lang = 'en-US'; }
+      utterance.rate = 1.04;
+      let finished = false;
+      const finish = () => { if (finished) return; finished = true; clearTimeout(guard); next(); };
+      // Some browsers occasionally never fire "end"; never let the conversation get stuck.
+      const guard = setTimeout(finish, 4000 + utterance.text.length * 95);
+      utterance.onend = finish;
+      utterance.onerror = finish;
+      speechSynthesis.speak(utterance);
+    };
+    next();
+  });
+}
+
+/* ---------- live session control ---------- */
+function micProblem(kind) {
+  S.live = false;
+  S.listenId += 1;
+  releaseMic();
+  let message;
+  if (!window.isSecureContext) {
+    message = 'Voice needs a secure (https) link or localhost. Open the app through its https link.';
+  } else if (kind === 'nomic') {
+    message = 'No microphone was found. Connect one, or type your question below.';
+  } else if (kind === 'unsupported') {
+    message = 'This browser cannot do live voice. Try Chrome, Edge or Safari, or type your question below.';
+  } else {
+    message = 'The microphone is blocked. Allow microphone access for this site (lock icon in the address bar), then tap Speak live again.';
+    if (window.top !== window) message += ' If the app is shown inside another page, open it in its own tab.';
+  }
+  root.classList.add('has-error');
+  setPhase('idle', message);
+}
+function releaseMic() {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  if (S.stream) { S.stream.getTracks().forEach((t) => t.stop()); S.stream = null; }
+}
+async function ensureStream() {
+  if (S.stream) return S.stream;
+  S.stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  return S.stream;
+}
+async function startLive() {
+  root.classList.remove('has-error');
+  if (!window.isSecureContext) { micProblem('insecure'); return; }
+  if (!SR && !(navigator.mediaDevices && window.MediaRecorder)) { micProblem('unsupported'); return; }
+  S.live = true; S.quiet = 0; S.failures = 0;
+  // Unlock speech output inside the click (required by Safari / iOS).
+  if ('speechSynthesis' in window) {
+    try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
+  }
+  if (S.mode === 'recorder') {
+    try { await ensureStream(); } catch (e) { micProblem(e && e.name === 'NotFoundError' ? 'nomic' : 'blocked'); return; }
+  }
+  listen();
+}
+function stopLive(message) {
+  S.live = false;
+  S.listenId += 1;
+  stopSpeaking();
+  if (S.rec) { try { S.rec.abort(); } catch (e) {} S.rec = null; }
+  if (S.recorder && S.recorder.state === 'recording') { S.discard = true; try { S.recorder.stop(); } catch (e) {} }
+  releaseMic();
+  caption.textContent = '';
+  setPhase('idle', message || IDLE_TEXT);
+}
+function listen() {
+  if (!S.live) return;
+  const id = ++S.listenId;
+  caption.textContent = '';
+  setPhase('listening', S.mode === 'browser'
+    ? "Go ahead, I'm listening."
+    : "Go ahead, I'm listening. Pause when you're done.");
+  if (S.mode === 'browser') listenBrowser(id); else listenRecorder(id);
+}
+function quietTooLong() {
+  S.quiet += 1;
+  if (S.quiet >= 6) { stopLive('Paused because it was quiet for a while. Tap Speak live to continue.'); return true; }
+  return false;
+}
+function switchToRecorder() {
+  S.mode = 'recorder';
+  ensureStream().then(() => listen()).catch((e) => micProblem(e && e.name === 'NotFoundError' ? 'nomic' : 'blocked'));
+}
+
+/* Browser speech recognition (Chrome, Edge, Safari): live captions, automatic end-of-speech. */
+function listenBrowser(id) {
+  let rec;
+  try { rec = new SR(); } catch (e) { switchToRecorder(); return; }
+  S.rec = rec;
+  rec.lang = 'en-US';
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.maxAlternatives = 1;
+  let finalText = '', interimText = '', error = null;
+  rec.onresult = (event) => {
+    interimText = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) finalText += result[0].transcript + ' ';
+      else interimText += result[0].transcript;
+    }
+    caption.textContent = (finalText + interimText).trim();
+  };
+  rec.onerror = (event) => { error = event.error; };
+  rec.onend = () => {
+    if (S.rec === rec) S.rec = null;
+    if (id !== S.listenId || !S.live) return;
+    const text = (finalText || interimText).trim();
+    if (error === 'not-allowed') { micProblem('blocked'); return; }
+    if (error === 'audio-capture') { micProblem('nomic'); return; }
+    if (error === 'network' || error === 'service-not-allowed' || error === 'language-not-supported') {
+      switchToRecorder();
+      return;
+    }
+    if (text) { S.quiet = 0; S.failures = 0; handleUtterance(text); return; }
+    if (error && error !== 'no-speech' && error !== 'aborted') {
+      S.failures += 1;
+      if (S.failures >= 4) { switchToRecorder(); return; }
+    }
+    if (quietTooLong()) return;
+    setTimeout(() => { if (id === S.listenId && S.live) listen(); }, 150);
+  };
+  try { rec.start(); } catch (e) {
+    S.failures += 1;
+    if (S.failures >= 4) { switchToRecorder(); return; }
+    setTimeout(() => { if (id === S.listenId && S.live) listen(); }, 400);
+  }
+}
+
+/* Fallback: record until a pause, then transcribe on the server with Faster-Whisper. */
+async function listenRecorder(id) {
+  let stream;
+  try { stream = await ensureStream(); } catch (e) { micProblem(e && e.name === 'NotFoundError' ? 'nomic' : 'blocked'); return; }
+  if (id !== S.listenId || !S.live) return;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  S.ctx = S.ctx || new AudioCtx();
+  if (S.ctx.state === 'suspended') { try { await S.ctx.resume(); } catch (e) {} }
+  const source = S.ctx.createMediaStreamSource(stream);
+  const analyser = S.ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const samples = new Float32Array(analyser.fftSize);
+  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4']
+    .find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+  const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  const chunks = [];
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  const stopped = new Promise((resolve) => { recorder.onstop = resolve; });
+  S.recorder = recorder;
+  S.discard = false;
+  recorder.start(250);
+  const t0 = performance.now();
+  let noise = 0.008, speaking = false, speechStart = 0, lastVoice = 0;
+  S.timer = setInterval(() => {
+    if (recorder.state !== 'recording') { clearInterval(S.timer); S.timer = null; return; }
+    if (id !== S.listenId || !S.live) { recorder.stop(); return; }
+    analyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+    const rms = Math.sqrt(sum / samples.length);
+    const now = performance.now();
+    if (!speaking) noise = noise * 0.95 + Math.min(rms, 0.05) * 0.05;
+    const threshold = Math.max(0.018, noise * 2.8);
+    root.style.setProperty('--lvl', Math.min(1, rms * 10).toFixed(3));
+    if (rms > threshold) { if (!speaking) { speaking = true; speechStart = now; } lastVoice = now; }
+    if (speaking && now - lastVoice > 1200 && now - speechStart > 500) recorder.stop();
+    else if (!speaking && now - t0 > 12000) recorder.stop();
+    else if (speaking && now - speechStart > 25000) recorder.stop();
+  }, 50);
+  await stopped;
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  try { source.disconnect(); } catch (e) {}
+  root.style.setProperty('--lvl', 0);
+  if (S.discard || id !== S.listenId || !S.live) { S.discard = false; return; }
+  if (!speaking || !chunks.length) { if (!quietTooLong()) listen(); return; }
+  S.quiet = 0;
+  setPhase('thinking', 'Turning your speech into text...');
+  try {
+    const type = recorder.mimeType || mime || 'audio/webm';
+    const ext = type.includes('ogg') ? 'ogg' : type.includes('mp4') ? 'm4a' : 'webm';
+    const file = new File([new Blob(chunks, { type })], 'speech.' + ext, { type });
+    const uploaded = await upload(file);
+    let result = await server.transcribe_clip({ path: uploaded.path });
+    if (typeof result === 'string') result = JSON.parse(result);
+    if (id !== S.listenId || !S.live) return;
+    if (result.error) { stopLive(result.error); root.classList.add('has-error'); return; }
+    if (result.text) handleUtterance(result.text); else listen();
+  } catch (e) {
+    stopLive('Could not transcribe that. Please try again or type your question.');
+    root.classList.add('has-error');
+  }
+}
+
+/* ---------- one conversation turn ---------- */
+async function handleUtterance(text) {
+  text = (text || '').trim();
+  if (!text || S.busy) return;
+  S.busy = true;
+  stopSpeaking();
+  S.listenId += 1;  // cancel any listening that is still running
+  if (S.rec) { try { S.rec.abort(); } catch (e) {} S.rec = null; }
+  if (S.recorder && S.recorder.state === 'recording') { S.discard = true; try { S.recorder.stop(); } catch (e) {} }
+  root.classList.remove('has-error');
+  addMsg('user', text);
+  caption.textContent = '';
+  setPhase('thinking', 'Thinking...');
+  let res;
+  try {
+    res = await server.live_turn({ text: text, pending: S.pending, last: S.last });
+    if (typeof res === 'string') res = JSON.parse(res);
+  } catch (e) {
+    res = {
+      reply: "Sorry, I couldn't reach the Solvra server. Make sure the app is still running, then try again.",
+      speech: 'Sorry, I could not reach the server. Please try again.',
+    };
+  }
+  S.busy = false;
+  if (!/^(yes|yeah|yep|no|nope|ok|okay|sure|cancel)\b/i.test(text)) S.last = text;
+  S.pending = res.pending || null;
+  showConfirm();
+  addMsg('bot', res.reply || '');
+  if (res.changed) trigger('account_changed');
+  if (S.live) {
+    setPhase('speaking', 'Speaking... tap the button to interrupt.');
+    await speak(res.speech || res.reply);
+    if (res.end) { stopLive('Live chat ended. Tap Speak live to start again.'); return; }
+    if (S.live && S.phase === 'speaking') listen();
+  } else {
+    setPhase('idle', IDLE_TEXT);
+  }
+}
+
+/* ---------- controls ---------- */
+orb.addEventListener('click', () => {
+  if (S.phase === 'speaking') { stopSpeaking(); if (S.live) listen(); else setPhase('idle', IDLE_TEXT); return; }
+  if (!S.live) { startLive(); return; }
+  if (S.phase === 'listening') stopLive();
+});
+endBtn.addEventListener('click', () => stopLive('Live chat ended. Tap Speak live to start again.'));
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  handleUtterance(text);
+});
+element.querySelectorAll('.sv-chip').forEach((chip) => {
+  chip.addEventListener('click', () => handleUtterance(chip.textContent));
+});
+confirmBar.querySelectorAll('button').forEach((button) => {
+  button.addEventListener('click', () => handleUtterance(button.dataset.answer));
+});
+window.addEventListener('pagehide', () => stopLive());
+"""
+
+
+def account_panel_html(account: AccountStore = DEMO) -> str:
+    """Plain HTML snapshot: four balance tiles and the list of open bills."""
+    checking = account.balance("Checking")
+    savings = account.balance("Savings")
+    debt = sum(account.debts().values())
+    open_bills = current_open_bills(account)
+    due_14 = sum(b.amount for b in current_open_bills(account, 14))
+    tiles = [
+        ("Checking", money(checking), ""),
+        ("Savings", money(savings), ""),
+        ("Debt", money(debt), " sv-debt"),
+        ("Due in 14 days", money(due_14), ""),
+    ]
+    tile_html = "".join(
+        f'<div class="sv-tile"><div class="sv-tile-label">{label}</div>'
+        f'<div class="sv-tile-value{extra}">{value}</div></div>'
+        for label, value, extra in tiles
     )
-    blocks_kwargs = {"title": "Solvra — Financial decision support"}
-    if int(gr.__version__.split(".")[0]) < 6:
-        blocks_kwargs.update({"theme": theme, "css": CUSTOM_CSS})
-    with gr.Blocks(**blocks_kwargs) as app:
-        pending_state = gr.State(None)
-        conversation_state = gr.State([])
+    rows = []
+    for b in open_bills:
+        days = (b.effective_due - AS_OF).days
+        when = (
+            "due today"
+            if days == 0
+            else (f"in {days} day{'s' if days != 1 else ''}" if days > 0 else f"{-days} days late")
+        )
+        when_html = f'<span class="sv-soon">{when}</span>' if days <= 3 else when
+        partial = " · partly paid" if b.status == "Partially paid" else ""
+        rows.append(
+            f'<li><div><div class="sv-bill-name">{html.escape(b.name)}</div>'
+            f'<div class="sv-bill-meta">{_spoken_date(b.effective_due)} · {when_html}{partial}</div></div>'
+            f'<div class="sv-bill-amt">{money(b.amount)}</div></li>'
+        )
+    bills_html = (
+        f'<ul class="sv-bills">{"".join(rows)}</ul>'
+        if rows
+        else '<p class="sv-muted">No open bills. Nice work!</p>'
+    )
+    return (
+        '<div class="sv-panel">'
+        f'<div class="sv-panel-head"><h3>Your money</h3><span class="sv-muted">as of {_spoken_date(AS_OF)}, {AS_OF.year}</span></div>'
+        f'<div class="sv-tiles">{tile_html}</div>'
+        f"<h4>Bills to pay ({len(open_bills)})</h4>{bills_html}"
+        "</div>"
+    )
+
+
+def transcribe_clip(payload: Any) -> dict[str, str]:
+    """Live-chat server function: transcribe a clip the browser uploaded (Gradio upload folder only)."""
+    path = payload.get("path") if isinstance(payload, dict) else payload
+    if not path:
+        return {"text": "", "error": ""}
+    try:
+        from gradio.utils import get_upload_folder
+
+        allowed = Path(get_upload_folder()).resolve()
+        resolved = Path(str(path)).resolve()
+        if allowed not in resolved.parents or not resolved.is_file():
+            return {"text": "", "error": "That recording could not be found. Please try again."}
+    except Exception:
+        return {"text": "", "error": "That recording could not be read. Please try again."}
+    text = transcribe_audio(str(resolved))
+    if text.startswith("[Transcription unavailable"):
+        return {
+            "text": "",
+            "error": "Speech-to-text isn't available in this browser setup. Use Chrome, Edge or Safari for live voice, or type your question.",
+        }
+    return {"text": text, "error": ""}
+
+
+def live_turn(payload: Any) -> dict[str, Any]:
+    """Live-chat server function: the browser sends {text, pending, last} and speaks the reply."""
+    data = payload if isinstance(payload, dict) else {"text": str(payload or "")}
+    pending = data.get("pending") if isinstance(data.get("pending"), dict) else None
+    return assistant_turn(
+        str(data.get("text") or ""), pending, str(data.get("last") or ""), DEMO
+    )
+
+
+def launch_app():
+    """Build the one-page Gradio interface."""
+    import gradio as gr
+
+    def reset_account() -> str:
+        DEMO.reset()
+        return account_panel_html(DEMO)
+
+    with gr.Blocks(title="Solvra — voice money assistant") as app:
+        gr.HTML(HEADER_HTML, js_on_load=None, apply_default_css=False)
+        with gr.Row(elem_id="sv-main", equal_height=False):
+            with gr.Column(scale=3, min_width=340):
+                live = gr.HTML(
+                    LIVE_HTML,
+                    js_on_load=LIVE_JS,
+                    server_functions=[live_turn, transcribe_clip],
+                    apply_default_css=False,
+                    elem_id="sv-live-wrap",
+                )
+            with gr.Column(scale=2, min_width=300):
+                panel = gr.HTML(
+                    account_panel_html(DEMO), js_on_load=None, apply_default_css=False
+                )
+                reset = gr.Button(
+                    "Reset demo account", size="sm", variant="secondary", elem_id="sv-reset"
+                )
         gr.HTML(
-            f"<div id='hero'><div><div class='hero-eyebrow'>FINANCIAL DECISION SUPPORT</div><h1>Solvra</h1><p>Clearer next steps when available cash and due dates collide.</p></div><div class='hero-tag'>SYNTHETIC DEMO ACCOUNT<span>Snapshot · {AS_OF:%B %d, %Y}</span></div></div>"
+            f'<p class="sv-disclaimer">Fictional demo household. {DISCLAIMER} Solvra never moves money or contacts anyone.</p>',
+            js_on_load=None,
+            apply_default_css=False,
         )
-        gr.Markdown(
-            f"**Synthetic demonstration data — fictional household, not real account records.** &nbsp; {DISCLAIMER}",
-            elem_classes="disclaimer",
-        )
-        with gr.Tabs():
-            # 1 Overview
-            with gr.Tab("Overview", id="overview"):
-                with gr.Row():
-                    period = gr.Dropdown(
-                        [
-                            "Last 30 days",
-                            "Last 90 days",
-                            "Last 6 months",
-                            "Last 12 months",
-                            "Entire 24-month history",
-                        ],
-                        value="Last 90 days",
-                        label="Dashboard range",
-                    )
-                    refresh = gr.Button("Refresh dashboard", variant="primary")
-                kpis = gr.HTML(dashboard_kpis(DEMO))
-                initial_charts = dashboard_charts(DEMO, "Last 90 days")
-                with gr.Row():
-                    c_income = gr.Plot(value=initial_charts[0])
-                    c_category = gr.Plot(value=initial_charts[1])
-                with gr.Row():
-                    c_cash = gr.Plot(value=initial_charts[2])
-                    c_debt = gr.Plot(value=initial_charts[3])
-                with gr.Row():
-                    c_catbar = gr.Plot(value=initial_charts[4])
-                    c_essential = gr.Plot(value=initial_charts[5])
-                with gr.Row():
-                    upcoming = gr.Dataframe(
-                        value=upcoming_frame(DEMO),
-                        label="Upcoming obligations",
-                        interactive=False,
-                        wrap=True,
-                    )
-                    health_md = gr.Markdown()
-                insights = gr.Markdown(
-                    value="### Financial insights\n" + financial_insights(DEMO)
-                )
-                score, score_factors, score_explain = health_assessment(DEMO)
-                health_md.value = (
-                    f"### Financial health index: {score}/100\n\n{score_explain}"
-                )
-                with gr.Accordion("Score components", open=False):
-                    gr.Dataframe(value=score_factors, interactive=False)
-                dashboard_outputs = [
-                    kpis,
-                    c_income,
-                    c_category,
-                    c_cash,
-                    c_debt,
-                    c_catbar,
-                    c_essential,
-                    upcoming,
-                    health_md,
-                    insights,
-                ]
-
-                def refresh_dashboard_for(selected_period):
-                    hscore, _, hexplain = health_assessment(DEMO)
-                    return (
-                        dashboard_kpis(DEMO),
-                        *dashboard_charts(DEMO, selected_period),
-                        upcoming_frame(DEMO),
-                        f"### Financial health index: {hscore}/100\n\n{hexplain}",
-                        "### Financial insights\n" + financial_insights(DEMO),
-                    )
-
-                period.change(
-                    refresh_dashboard_for, inputs=period, outputs=dashboard_outputs
-                )
-                refresh.click(
-                    refresh_dashboard_for, inputs=period, outputs=dashboard_outputs
-                )
-            # 2 Transactions
-            with gr.Tab("Transactions", id="transactions"):
-                gr.Markdown(
-                    "### Transaction ledger\nAround 1,000 generated records with real dates, signed amounts, accounts, recurrence labels, and event-linked descriptions."
-                )
-                trans_range = gr.Dropdown(
-                    [
-                        "Last 30 days",
-                        "Last 90 days",
-                        "Last 6 months",
-                        "Last 12 months",
-                        "Entire history",
-                    ],
-                    value="Last 90 days",
-                    label="Period",
-                )
-                trans_table = gr.Dataframe(
-                    value=transactions_for_period(DEMO, 90)
-                    .sort_values("date", ascending=False)
-                    .head(250),
-                    interactive=False,
-                    wrap=True,
-                )
-                with gr.Row():
-                    add_date = gr.Textbox(
-                        value=AS_OF.isoformat(), label="Date (YYYY-MM-DD)"
-                    )
-                    add_merchant = gr.Textbox(label="Merchant / source")
-                    add_category = gr.Dropdown(
-                        [
-                            "Income",
-                            "Housing",
-                            "Utilities",
-                            "Groceries",
-                            "Transportation",
-                            "Insurance",
-                            "Debt payments",
-                            "Medical",
-                            "Dining & Entertainment",
-                            "Shopping",
-                            "Subscriptions",
-                            "Other expenses",
-                        ],
-                        value="Other expenses",
-                        label="Category",
-                    )
-                with gr.Row():
-                    add_amount = gr.Number(
-                        label="Signed amount (income positive, expense negative)"
-                    )
-                    add_desc = gr.Textbox(label="Description")
-                    add_tx = gr.Button("Add transaction", variant="primary")
-                tx_msg = gr.Markdown()
-
-                def filter_tx(rng):
-                    d = {
-                        "Last 30 days": 30,
-                        "Last 90 days": 90,
-                        "Last 6 months": 183,
-                        "Last 12 months": 365,
-                        "Entire history": None,
-                    }[rng]
-                    return (
-                        transactions_for_period(DEMO, d)
-                        .sort_values("date", ascending=False)
-                        .head(500)
-                    )
-
-                trans_range.change(filter_tx, trans_range, trans_table)
-
-                def create_tx(date, merchant, category, amount, desc):
-                    try:
-                        d = dt.date.fromisoformat(date)
-                        amount = float(amount)
-                        if amount == 0:
-                            raise ValueError("Amount must be non-zero")
-                        DEMO.add_transaction(
-                            amount,
-                            category,
-                            merchant or "User entry",
-                            desc or "Manually entered",
-                            d,
-                            account="Checking",
-                            tx_type=(
-                                "Income"
-                                if amount > 0 and category == "Income"
-                                else "Expense"
-                            ),
-                        )
-                        return (
-                            f"Saved transaction. Current checking: {money(DEMO.balance('Checking'))}.",
-                            filter_tx("Entire history"),
-                        )
-                    except Exception as e:
-                        return f"Could not save: {e}", filter_tx("Last 90 days")
-
-                transaction_event = add_tx.click(
-                    create_tx,
-                    [add_date, add_merchant, add_category, add_amount, add_desc],
-                    [tx_msg, trans_table],
-                )
-            # 3 Bills
-            with gr.Tab("Bills", id="bills"):
-                gr.Markdown(
-                    "### Obligation register\nEdit the synthetic account's open obligations. Confirmed extensions are distinguished from requests; payment entries do not initiate bank transfers."
-                )
-                bills_table = gr.Dataframe(
-                    value=bill_df(DEMO), interactive=False, wrap=True
-                )
-                bill_history_table = gr.Dataframe(
-                    value=DEMO.records["bill_history"]
-                    .sort_values("due_date", ascending=False)
-                    .head(100),
-                    label="Historical and current bill payment history (latest 100)",
-                    interactive=False,
-                    wrap=True,
-                )
-                with gr.Accordion("Edit an existing bill", open=False):
-                    with gr.Row():
-                        edit_id = gr.Textbox(label="Bill ID or exact bill name")
-                        edit_amount = gr.Number(label="New amount (blank = unchanged)")
-                        edit_due = gr.Textbox(
-                            label="New due date YYYY-MM-DD (blank = unchanged)"
-                        )
-                    with gr.Row():
-                        edit_minimum = gr.Number(
-                            label="New minimum (blank = unchanged)"
-                        )
-                        edit_late = gr.Number(label="New late fee (blank = unchanged)")
-                        edit_apr = gr.Number(
-                            label="New APR decimal (blank = unchanged)"
-                        )
-                        edit_grace = gr.Number(
-                            label="New grace days (blank = unchanged)"
-                        )
-                    with gr.Row():
-                        edit_extension = gr.Textbox(
-                            label="Extension date YYYY-MM-DD (blank = no change)"
-                        )
-                        edit_confirmed = gr.Checkbox(
-                            label="Provider confirmed extension"
-                        )
-                        edit_revoke = gr.Checkbox(label="Revoke saved extension")
-                        edit_terms = gr.Textbox(label="Extension / arrangement terms")
-                        edit_button = gr.Button("Save bill edits", variant="primary")
-                with gr.Accordion(
-                    "Upload or paste a bill for field extraction", open=False
-                ):
-                    doc_file = gr.File(
-                        label="Bill image or searchable PDF",
-                        file_types=["image", ".pdf"],
-                        type="filepath",
-                    )
-                    doc_text = gr.Textbox(
-                        label="Or paste bill text",
-                        lines=6,
-                        placeholder="Provider\nAmount Due: $120.00\nDue Date: 12/01/2026",
-                    )
-                    extract_button = gr.Button("Extract fields for review")
-                    extract_fields = gr.Dataframe(
-                        label="Extracted fields and confidence", interactive=False
-                    )
-                    extract_json = gr.Code(
-                        label="Editable structured fields (unknown values stay null)",
-                        language="json",
-                        lines=12,
-                    )
-                    extract_msg = gr.Markdown()
-                    extract_confirm = gr.Checkbox(
-                        label="I reviewed the fields. If optional terms are null, I explicitly accept they remain unknown and will be modeled as zero until confirmed with the provider."
-                    )
-                    extract_add = gr.Button(
-                        "Confirm and add extracted bill", variant="primary"
-                    )
-                with gr.Accordion("Add a bill", open=False):
-                    with gr.Row():
-                        new_name = gr.Textbox(label="Bill name")
-                        new_provider = gr.Textbox(label="Provider")
-                        new_cat = gr.Dropdown(
-                            [
-                                "Housing",
-                                "Utilities",
-                                "Groceries",
-                                "Transportation",
-                                "Insurance",
-                                "Debt payments",
-                                "Medical",
-                                "Subscriptions",
-                                "Other",
-                            ],
-                            value="Utilities",
-                            label="Category",
-                        )
-                    with gr.Row():
-                        new_amount = gr.Number(label="Amount owed")
-                        new_due = gr.Textbox(
-                            value=(AS_OF + dt.timedelta(days=7)).isoformat(),
-                            label="Due date YYYY-MM-DD",
-                        )
-                        new_min = gr.Number(value=0, label="Minimum payment")
-                        new_late = gr.Number(value=0, label="Late fee")
-                    with gr.Row():
-                        new_apr = gr.Number(value=0, label="APR as decimal (e.g. 0.24)")
-                        new_grace = gr.Number(value=0, label="Grace days")
-                        new_risk = gr.Number(
-                            value=0,
-                            label="Consequence weight ($-equivalent; model assumption)",
-                        )
-                        new_risk_days = gr.Number(
-                            value=7, label="Risk deadline after due (days)"
-                        )
-                        new_partial = gr.Checkbox(
-                            value=True, label="Partial payment allowed"
-                        )
-                    new_cons = gr.Textbox(
-                        value="Provider terms not yet confirmed",
-                        label="Consequences / unknowns",
-                    )
-                    add_bill_button = gr.Button("Add obligation", variant="primary")
-                with gr.Row():
-                    delete_id = gr.Textbox(label="Bill ID/name to delete")
-                    delete_button = gr.Button("Delete obligation", variant="stop")
-                    pay_id = gr.Textbox(label="Bill ID/name to record payment against")
-                    pay_amt = gr.Number(label="Payment amount")
-                    pay_button = gr.Button("Record payment")
-                bill_msg = gr.Markdown()
-
-                def add_bill_cb(
-                    name,
-                    provider,
-                    cat,
-                    amount,
-                    due,
-                    minimum,
-                    late,
-                    apr,
-                    grace,
-                    risk,
-                    riskdays,
-                    partial,
-                    cons,
-                ):
-                    try:
-                        if not name or amount is None or float(amount) <= 0:
-                            raise ValueError("Name and positive amount are required")
-                        b = Bill(
-                            f"B-CUSTOM-{uuid.uuid4().hex[:7]}",
-                            name,
-                            provider or "Unspecified provider",
-                            cat,
-                            float(amount),
-                            dt.date.fromisoformat(due),
-                            float(minimum or 0),
-                            float(late or 0),
-                            float(apr or 0),
-                            int(grace or 0),
-                            cons or "Unknown",
-                            float(risk or 0),
-                            int(riskdays or 7),
-                            False,
-                            None,
-                            "",
-                            bool(partial),
-                            "User-entered; provider terms unverified",
-                        )
-                        DEMO.add_bill(b)
-                        return f"Added {b.name} ({b.bill_id}).", bill_df(DEMO)
-                    except Exception as e:
-                        return f"Could not add bill: {e}", bill_df(DEMO)
-
-                add_bill_event = add_bill_button.click(
-                    add_bill_cb,
-                    [
-                        new_name,
-                        new_provider,
-                        new_cat,
-                        new_amount,
-                        new_due,
-                        new_min,
-                        new_late,
-                        new_apr,
-                        new_grace,
-                        new_risk,
-                        new_risk_days,
-                        new_partial,
-                        new_cons,
-                    ],
-                    [bill_msg, bills_table],
-                )
-
-                def edit_bill_cb(
-                    identifier,
-                    amount,
-                    due,
-                    minimum,
-                    late,
-                    apr,
-                    grace,
-                    extension,
-                    confirmed,
-                    revoke,
-                    terms,
-                ):
-                    b = DEMO.find_bill(identifier)
-                    if not b:
-                        return "Bill not found.", bill_df(DEMO)
-                    try:
-                        if amount is not None and float(amount) > 0:
-                            b.amount = float(amount)
-                        if due and str(due).strip():
-                            b.due_date = dt.date.fromisoformat(due)
-                        if minimum is not None:
-                            b.minimum_payment = float(minimum)
-                        if late is not None:
-                            b.late_fee = float(late)
-                        if apr is not None:
-                            b.apr = float(apr)
-                        if grace is not None:
-                            b.grace_days = int(grace)
-                        if revoke:
-                            b.confirmed_extension = False
-                            b.extension_date = None
-                            b.extension_terms = ""
-                        elif extension and str(extension).strip():
-                            b.extension_date = dt.date.fromisoformat(extension)
-                            b.confirmed_extension = bool(confirmed)
-                            b.extension_terms = (
-                                terms
-                                or "User-edited provider-confirmation status; verify documented terms."
-                            )
-                        elif confirmed and b.extension_date:
-                            b.confirmed_extension = True
-                            if terms:
-                                b.extension_terms = terms
-                        elif terms:
-                            b.extension_terms = terms
-                        DEMO.version += 1
-                        return (
-                            f"Updated {b.name}; optimizer will use saved values and only confirmed extensions.",
-                            bill_df(DEMO),
-                        )
-                    except Exception as e:
-                        return f"Could not edit bill: {e}", bill_df(DEMO)
-
-                edit_bill_event = edit_button.click(
-                    edit_bill_cb,
-                    [
-                        edit_id,
-                        edit_amount,
-                        edit_due,
-                        edit_minimum,
-                        edit_late,
-                        edit_apr,
-                        edit_grace,
-                        edit_extension,
-                        edit_confirmed,
-                        edit_revoke,
-                        edit_terms,
-                    ],
-                    [bill_msg, bills_table],
-                )
-
-                def extract_cb(file_path, text):
-                    content = (text or "").strip()
-                    if not content and file_path:
-                        content = read_uploaded_bill(
-                            file_path if isinstance(file_path, str) else file_path.name
-                        )
-                    if not content:
-                        return (
-                            pd.DataFrame(),
-                            "",
-                            "Upload a bill or paste its text first.",
-                        )
-                    result = extract_bill_fields(content)
-                    table = pd.DataFrame(
-                        [
-                            {
-                                "field": k,
-                                "extracted_value": v,
-                                "confidence": result["confidence"][k],
-                            }
-                            for k, v in result["fields"].items()
-                        ]
-                    )
-                    return (
-                        table,
-                        json.dumps(result, indent=2),
-                        "Review every value. OCR/regex can be wrong; missing fields are null, not zero.",
-                    )
-
-                extract_button.click(
-                    extract_cb,
-                    [doc_file, doc_text],
-                    [extract_fields, extract_json, extract_msg],
-                )
-
-                def confirm_extracted_bill(payload, confirmed):
-                    try:
-                        if not confirmed:
-                            return (
-                                "Please confirm your review before adding this bill.",
-                                bill_df(DEMO),
-                            )
-                        result = json.loads(payload)
-                        fields = result.get("fields", result)
-                        amount = fields.get("amount")
-                        due = fields.get("due_date")
-                        if amount is None or due is None:
-                            raise ValueError(
-                                "Amount and due date are required; fill them in the editable JSON before confirming."
-                            )
-                        provider = fields.get("provider") or "Unidentified provider"
-                        missing = [
-                            k
-                            for k in (
-                                "minimum_payment",
-                                "late_fee",
-                                "apr",
-                                "grace_days",
-                            )
-                            if fields.get(k) is None
-                        ]
-                        note = (
-                            (
-                                "Unknown terms: "
-                                + ", ".join(missing)
-                                + ". Explicitly left unknown by reviewer; verify with provider. "
-                            )
-                            if missing
-                            else ""
-                        )
-                        b = Bill(
-                            f"B-OCR-{uuid.uuid4().hex[:7]}",
-                            provider,
-                            provider,
-                            "Other",
-                            float(amount),
-                            dt.date.fromisoformat(str(due)),
-                            float(fields.get("minimum_payment") or 0),
-                            float(fields.get("late_fee") or 0),
-                            float(fields.get("apr") or 0),
-                            int(fields.get("grace_days") or 0),
-                            note
-                            + (
-                                "Provider terms extracted from document; confirm directly."
-                            ),
-                            0,
-                            7,
-                            False,
-                            None,
-                            str(fields.get("extension_terms") or ""),
-                            True,
-                            "Document extraction reviewed; synthetic prototype",
-                        )
-                        DEMO.add_bill(b)
-                        return (
-                            f"Added reviewed obligation {b.name} ({b.bill_id}). Unknown terms are disclosed and currently modeled as zero; update the bill once verified.",
-                            bill_df(DEMO),
-                        )
-                    except Exception as e:
-                        return f"Bill not added: {e}", bill_df(DEMO)
-
-                extracted_bill_event = extract_add.click(
-                    confirm_extracted_bill,
-                    [extract_json, extract_confirm],
-                    [extract_msg, bills_table],
-                )
-
-                def delete_bill_cb(identifier):
-                    ok = DEMO.delete_bill(identifier)
-                    return (
-                        "Deleted obligation from this session; historical payment records remain."
-                        if ok
-                        else "Bill not found; check the ID/name."
-                    ), bill_df(DEMO)
-
-                delete_button.click(delete_bill_cb, delete_id, [bill_msg, bills_table])
-
-                def pay_bill_cb(identifier, amount):
-                    b = DEMO.find_bill(identifier)
-                    try:
-                        if not b:
-                            raise ValueError("Bill not found")
-                        amount = float(amount)
-                        if amount <= 0 or amount > DEMO.balance("Checking"):
-                            raise ValueError(
-                                "Payment must be positive and no greater than recorded checking cash"
-                            )
-                        if amount > b.amount:
-                            raise ValueError("Payment exceeds outstanding bill amount")
-                        DEMO.add_transaction(
-                            -amount,
-                            (
-                                "Transfers"
-                                if b.category == "Debt payments"
-                                else b.category
-                            ),
-                            b.provider,
-                            f"Payment recorded: {b.name}",
-                            account="Checking",
-                            tx_type="Payment",
-                            method="Manual entry",
-                        )
-                        if b.name == "Credit Card Minimum":
-                            DEMO.adjust_debt("Credit Card", -amount)
-                        elif b.name == "Auto Loan":
-                            DEMO.adjust_debt("Auto Loan", -amount * 0.76)
-                        elif b.name == "Student Loan":
-                            DEMO.adjust_debt("Student Loan", -amount * 0.88)
-                        DEMO.record_bill_payment(b, amount)
-                        b.amount = round(b.amount - amount, 2)
-                        b.status = "Paid" if b.amount < 0.01 else "Partially paid"
-                        DEMO.version += 1
-                        return (
-                            f"Recorded ${amount:,.2f}; remaining obligation ${b.amount:,.2f}.",
-                            bill_df(DEMO),
-                            DEMO.records["bill_history"]
-                            .sort_values("due_date", ascending=False)
-                            .head(100),
-                        )
-                    except Exception as e:
-                        return (
-                            f"Payment not recorded: {e}",
-                            bill_df(DEMO),
-                            DEMO.records["bill_history"]
-                            .sort_values("due_date", ascending=False)
-                            .head(100),
-                        )
-
-                payment_event = pay_button.click(
-                    pay_bill_cb,
-                    [pay_id, pay_amt],
-                    [bill_msg, bills_table, bill_history_table],
-                )
-            # 4 Financial situation
-            with gr.Tab("Financial Situation", id="situation"):
-                gr.Markdown(
-                    "### Scenario inputs\nChecking is the default spendable balance; savings is shown separately and is not automatically drawn into a plan. Include any savings you are willing to use in the available-cash override, then set the reserve you want to protect. Overrides are planning-only until separately recorded."
-                )
-
-                def situation_snapshot_text():
-                    return (
-                        f"**Ledger snapshot — {AS_OF}:** Checking {money(DEMO.balance('Checking'))} · savings {money(DEMO.balance('Savings'))} · "
-                        f"total recorded debt {money(sum(DEMO.debts().values()))} · open bill obligations {money(sum(b.amount for b in current_open_bills(DEMO)))}. "
-                        "Expected income is a scenario input, not a deposit."
-                    )
-
-                situation_snapshot = gr.Markdown(value=situation_snapshot_text())
-                refresh_situation = gr.Button("Refresh ledger snapshot")
-                refresh_situation.click(
-                    situation_snapshot_text, None, situation_snapshot
-                )
-                situation_checking = gr.Number(
-                    value=DEMO.balance("Checking"), label="Available checking cash ($)"
-                )
-                with gr.Row():
-                    paycheck = gr.Number(
-                        value=2200, label="Expected paycheck amount ($)"
-                    )
-                    payday = gr.Textbox(
-                        value="2026-11-20", label="Expected paycheck date (YYYY-MM-DD)"
-                    )
-                    other_income = gr.Number(value=0, label="Other expected income ($)")
-                    other_income_date = gr.Textbox(
-                        value="2026-11-20", label="Other income date"
-                    )
-                reserve = gr.Number(
-                    value=DEMO.preferences["reserve"],
-                    label="Emergency cash reserve to protect ($)",
-                )
-                priority = gr.Dropdown(
-                    [
-                        "Protect housing and essential services",
-                        "Minimize fees and interest",
-                        "Protect transportation and insurance",
-                        "User-defined priorities",
-                    ],
-                    value=DEMO.preferences["financial_priority"],
-                    label="Financial priority",
-                )
-                circumstances = gr.Textbox(
-                    value="",
-                    label="Special circumstances (context only; explain to provider directly)",
-                    lines=2,
-                )
-                situation_save = gr.Button(
-                    "Save planning assumptions", variant="primary"
-                )
-                situation_msg = gr.Markdown()
-
-                def save_situation(
-                    cash, inc, date, other, otherdate, resv, prio, special
-                ):
-                    try:
-                        DEMO.preferences.update(
-                            {
-                                "planning_cash": float(cash),
-                                "paycheck": float(inc or 0),
-                                "payday": dt.date.fromisoformat(date),
-                                "other_income": float(other or 0),
-                                "other_income_date": dt.date.fromisoformat(otherdate),
-                                "reserve": float(resv or 0),
-                                "financial_priority": prio,
-                                "special_circumstances": special or "",
-                            }
-                        )
-                        return "Saved for planning only. Confirm actual income/balance changes separately; expected income is not guaranteed."
-                    except Exception as e:
-                        return f"Please correct the inputs: {e}"
-
-                situation_event = situation_save.click(
-                    save_situation,
-                    [
-                        situation_checking,
-                        paycheck,
-                        payday,
-                        other_income,
-                        other_income_date,
-                        reserve,
-                        priority,
-                        circumstances,
-                    ],
-                    situation_msg,
-                )
-
-            # 5 Smart prioritization
-            with gr.Tab("Smart Prioritization", id="prioritize"):
-                gr.Markdown(
-                    "### Consequence-aware payment plan\nThe transparent SciPy MILP allocates cash only when available, respects minimums and non-partial obligations, and treats provider arrangements as confirmed only when explicitly recorded."
-                )
-                with gr.Row():
-                    opt_cash = gr.Number(
-                        value=DEMO.balance("Checking"), label="Available checking cash"
-                    )
-                    opt_reserve = gr.Number(
-                        value=DEMO.preferences["reserve"],
-                        label="Cash reserve to protect",
-                    )
-                with gr.Row():
-                    opt_income = gr.Number(
-                        value=DEMO.preferences["paycheck"],
-                        label="Expected paycheck (not guaranteed)",
-                    )
-                    opt_date = gr.Textbox(
-                        value=DEMO.preferences["payday"].isoformat(),
-                        label="Paycheck date YYYY-MM-DD",
-                    )
-                    opt_other = gr.Number(
-                        value=DEMO.preferences["other_income"],
-                        label="Other expected income",
-                    )
-                    opt_other_date = gr.Textbox(
-                        value=DEMO.preferences["other_income_date"].isoformat(),
-                        label="Other income date",
-                    )
-                with gr.Row():
-                    weight_late = gr.Number(
-                        value=1.0, label="Consequence weight: late fee"
-                    )
-                    weight_interest = gr.Number(
-                        value=1.0, label="Consequence weight: interest"
-                    )
-                    weight_critical = gr.Number(
-                        value=1.0, label="Consequence weight: critical risk"
-                    )
-                    opt_run = gr.Button("Calculate payment strategy", variant="primary")
-                opt_output = gr.Markdown()
-                provider_pick = gr.Textbox(
-                    value="Electricity", label="Bill name for provider message"
-                )
-                message_button = gr.Button("Draft extension / arrangement request")
-                message_output = gr.Textbox(label="Customizable message", lines=5)
-
-                def opt_cb(cash, resv, inc, date, other, otherdate, wlate, wint, wcrit):
-                    try:
-                        incomes = []
-                        if inc and float(inc) > 0:
-                            incomes.append(
-                                IncomeEvent(
-                                    float(inc),
-                                    dt.date.fromisoformat(date),
-                                    "Expected paycheck",
-                                    False,
-                                )
-                            )
-                        if other and float(other) > 0:
-                            incomes.append(
-                                IncomeEvent(
-                                    float(other),
-                                    dt.date.fromisoformat(otherdate),
-                                    "Other expected income",
-                                    False,
-                                )
-                            )
-                        weights = {
-                            "late_fee": max(0, float(wlate)),
-                            "interest": max(0, float(wint)),
-                            "critical": max(0, float(wcrit)),
-                        }
-                        scenario = Scenario(
-                            float(cash),
-                            AS_OF,
-                            copy.deepcopy(current_open_bills(DEMO)),
-                            incomes,
-                            float(resv or 0),
-                            40,
-                        )
-                        result = optimize(scenario, weights)
-                        context_note = (
-                            f"\n\n**Saved priority:** {DEMO.preferences.get('financial_priority','Not specified')} (context only; modeled weights above control the objective). "
-                            f"**Special circumstances:** {DEMO.preferences.get('special_circumstances','') or 'None recorded'}. These notes do not alter provider terms or solver constraints."
-                        )
-                        return render_plan(result) + context_note
-                    except Exception as e:
-                        return f"Could not calculate: {e}"
-
-                opt_run.click(
-                    opt_cb,
-                    [
-                        opt_cash,
-                        opt_reserve,
-                        opt_income,
-                        opt_date,
-                        opt_other,
-                        opt_other_date,
-                        weight_late,
-                        weight_interest,
-                        weight_critical,
-                    ],
-                    opt_output,
-                )
-
-                def message_cb(name):
-                    b = DEMO.find_bill(name or "")
-                    return (
-                        provider_message(b)
-                        if b
-                        else "Bill not found. Enter a bill name, provider, or ID exactly as shown in Bills."
-                    )
-
-                message_button.click(message_cb, provider_pick, message_output)
-            # 6 Simulations
-            with gr.Tab("Simulations", id="simulations"):
-                gr.Markdown(
-                    "### What-if comparison\nAll four strategies use the same starting cash, reserve, income, bills, and consequence model. Amount/due overrides and simulated extensions are scenario-only."
-                )
-                with gr.Row():
-                    sim_cash = gr.Number(
-                        value=DEMO.balance("Checking"), label="Starting cash"
-                    )
-                    sim_reserve = gr.Number(
-                        value=DEMO.preferences["reserve"], label="Protected reserve"
-                    )
-                    sim_income = gr.Number(
-                        value=DEMO.preferences["paycheck"], label="Expected paycheck"
-                    )
-                    sim_income_date = gr.Textbox(
-                        value=DEMO.preferences["payday"].isoformat(),
-                        label="Income date",
-                    )
-                with gr.Row():
-                    sim_other = gr.Number(value=0, label="Other expected income")
-                    sim_other_date = gr.Textbox(
-                        value="2026-11-20", label="Other income date"
-                    )
-                    sim_weight_late = gr.Number(value=1, label="Late fee weight")
-                    sim_weight_interest = gr.Number(value=1, label="Interest weight")
-                    sim_weight_critical = gr.Number(
-                        value=1, label="Critical consequence weight"
-                    )
-                with gr.Row():
-                    sim_bill = gr.Textbox(label="Optional bill name to modify")
-                    sim_amount = gr.Number(label="Amount override (blank = unchanged)")
-                    sim_due = gr.Textbox(
-                        label="Due date override YYYY-MM-DD (blank = unchanged)"
-                    )
-                    sim_ext = gr.Checkbox(label="What-if: extension approved (+5 days)")
-                sim_button = gr.Button("Run four-way comparison", variant="primary")
-                sim_table = gr.Dataframe(interactive=False)
-                sim_chart = gr.Plot()
-                sim_explain = gr.Markdown()
-
-                def sim_cb(
-                    cash,
-                    resv,
-                    inc,
-                    idate,
-                    other,
-                    otherdate,
-                    wlate,
-                    wint,
-                    wcrit,
-                    name,
-                    amount,
-                    due,
-                    ext,
-                ):
-                    try:
-                        bills = copy.deepcopy(current_open_bills(DEMO))
-                        key = str(name or "").strip().lower()
-                        b = next(
-                            (
-                                x
-                                for x in bills
-                                if key
-                                and (key in x.name.lower() or key in x.provider.lower())
-                            ),
-                            None,
-                        )
-                        if b:
-                            if amount is not None and float(amount) > 0:
-                                b.amount = float(amount)
-                            if due and str(due).strip():
-                                b.due_date = dt.date.fromisoformat(due)
-                            if ext:
-                                b.confirmed_extension = True
-                                b.extension_date = b.due_date + dt.timedelta(days=5)
-                                b.extension_terms = (
-                                    "What-if extension only; not provider confirmed."
-                                )
-                        incomes = []
-                        if inc and float(inc) > 0:
-                            incomes.append(
-                                IncomeEvent(
-                                    float(inc),
-                                    dt.date.fromisoformat(idate),
-                                    "Expected paycheck",
-                                    False,
-                                )
-                            )
-                        if other and float(other) > 0:
-                            incomes.append(
-                                IncomeEvent(
-                                    float(other),
-                                    dt.date.fromisoformat(otherdate),
-                                    "Other expected income",
-                                    False,
-                                )
-                            )
-                        weights = {
-                            "late_fee": max(0, float(wlate)),
-                            "interest": max(0, float(wint)),
-                            "critical": max(0, float(wcrit)),
-                        }
-                        s = Scenario(
-                            float(cash), AS_OF, bills, incomes, float(resv or 0), 40
-                        )
-                        results = run_all_strategies(s, weights)
-                        table = plan_table(results)
-                        fig = px.bar(
-                            table,
-                            x="Strategy",
-                            y="Modeled harm ($-equivalent)",
-                            color="Strategy",
-                            title="Comparable modeled consequence estimate",
-                        )
-                        fig.update_layout(
-                            template="plotly_white", height=350, showlegend=False
-                        )
-                        text = (
-                            "### Optimized plan\n"
-                            + render_plan(results[-1], bills)
-                            + "\n\nThese are synthetic model estimates; contact providers to confirm terms."
-                        )
-                        return table, fig, text
-                    except Exception as e:
-                        return pd.DataFrame(), go.Figure(), f"Simulation error: {e}"
-
-                sim_button.click(
-                    sim_cb,
-                    [
-                        sim_cash,
-                        sim_reserve,
-                        sim_income,
-                        sim_income_date,
-                        sim_other,
-                        sim_other_date,
-                        sim_weight_late,
-                        sim_weight_interest,
-                        sim_weight_critical,
-                        sim_bill,
-                        sim_amount,
-                        sim_due,
-                        sim_ext,
-                    ],
-                    [sim_table, sim_chart, sim_explain],
-                )
-            # 7 Voice assistant
-            with gr.Tab("Voice Assistant", id="voice"):
-                gr.Markdown(
-                    "### Ask Solvra\nAsk text or speak. Responses query the synthetic account ledger and/or call the optimizer. Important updates are staged for your confirmation before they change the account."
-                )
-                audio = gr.Audio(
-                    sources=["microphone", "upload"],
-                    type="filepath",
-                    label="Speak or upload audio",
-                )
-                transcribe_btn = gr.Button("Transcribe with Faster-Whisper")
-                transcript = gr.Textbox(label="Transcript (editable)", lines=2)
-                with gr.Row():
-                    question = gr.Textbox(
-                        label="Your financial question / update",
-                        lines=2,
-                        placeholder="Which bills should I pay first?",
-                    )
-                    ask_btn = gr.Button("Ask Solvra", variant="primary")
-                answer = gr.Markdown()
-                speak = gr.Audio(label="Spoken response (gTTS)", type="filepath")
-                with gr.Row():
-                    confirm_btn = gr.Button(
-                        "Confirm interpreted financial update", variant="primary"
-                    )
-                    cancel_btn = gr.Button("Cancel update")
-                update_msg = gr.Markdown()
-
-                def transcribe(path):
-                    text = transcribe_audio(path)
-                    return text
-
-                transcribe_btn.click(transcribe, audio, transcript).then(
-                    lambda t: t, transcript, question
-                )
-
-                def ask_cb(q, history):
-                    text, pending = answer_financial_question(q, DEMO, history)
-                    history = (history or []) + [
-                        {"role": "user", "content": q},
-                        {"role": "assistant", "content": text},
-                    ]
-                    return text, pending, history, speech_file(text)
-
-                ask_btn.click(
-                    ask_cb,
-                    [question, conversation_state],
-                    [answer, pending_state, conversation_state, speak],
-                )
-
-                def approve_pending(p):
-                    return confirm_account_update(p, True), None
-
-                def cancel_pending(p):
-                    return confirm_account_update(p, False), None
-
-                confirmation_event = (
-                    confirm_btn.click(
-                        approve_pending, pending_state, [update_msg, pending_state]
-                    )
-                    .then(
-                        lambda: (
-                            bill_df(DEMO),
-                            DEMO.records["bill_history"]
-                            .sort_values("due_date", ascending=False)
-                            .head(100),
-                        ),
-                        None,
-                        [bills_table, bill_history_table],
-                    )
-                    .then(
-                        refresh_dashboard_for, inputs=period, outputs=dashboard_outputs
-                    )
-                )
-                cancel_btn.click(
-                    cancel_pending, pending_state, [update_msg, pending_state]
-                )
-            # 8 Reports & analytics
-            with gr.Tab("Reports & Analytics", id="reports"):
-                gr.Markdown(
-                    "### Personal report\nHistorical account reports are separate from synthetic optimizer-evaluation results."
-                )
-                report_range = gr.Dropdown(
-                    [
-                        "Last 3 months",
-                        "Last 6 months",
-                        "Last 12 months",
-                        "Entire history",
-                    ],
-                    value="Last 12 months",
-                    label="Report range",
-                )
-                report_initial = report_support_tables(DEMO, 365)
-                report_initial_monthly = personal_report(DEMO, 365)
-                report_initial_fig = go.Figure()
-                report_initial_fig.add_trace(
-                    go.Bar(
-                        x=report_initial_monthly.month,
-                        y=report_initial_monthly.income,
-                        name="Income",
-                        marker_color="#16a38c",
-                    )
-                )
-                report_initial_fig.add_trace(
-                    go.Bar(
-                        x=report_initial_monthly.month,
-                        y=report_initial_monthly.expenses,
-                        name="Expenses",
-                        marker_color="#ee825f",
-                    )
-                )
-                report_initial_fig.add_trace(
-                    go.Scatter(
-                        x=report_initial_monthly.month,
-                        y=report_initial_monthly.net_cash_flow,
-                        name="Net",
-                        mode="lines+markers",
-                    )
-                )
-                report_initial_fig.update_layout(
-                    title="Personal monthly report",
-                    barmode="group",
-                    template="plotly_white",
-                    height=340,
-                )
-                report_table = gr.Dataframe(
-                    value=report_initial_monthly, interactive=False
-                )
-                report_chart = gr.Plot(value=report_initial_fig)
-                with gr.Row():
-                    report_categories = gr.Dataframe(
-                        value=report_initial[0],
-                        label="Spending by category",
-                        interactive=False,
-                    )
-                    report_bill_history = gr.Dataframe(
-                        value=report_initial[1],
-                        label="Payment history / late payments",
-                        interactive=False,
-                        wrap=True,
-                    )
-                with gr.Row():
-                    report_upcoming = gr.Dataframe(
-                        value=report_initial[2],
-                        label="Upcoming obligations",
-                        interactive=False,
-                    )
-                    report_health = gr.Dataframe(
-                        value=report_initial[3],
-                        label="Health trend score factors",
-                        interactive=False,
-                    )
-                report_insights = gr.Markdown(
-                    value="### Account insights\n"
-                    + report_initial[4]
-                    + "\n\n"
-                    + report_initial[5]
-                )
-                with gr.Row():
-                    report_csv = gr.Button("Create monthly / balances CSV")
-                    report_category_csv = gr.Button("Create category spending CSV")
-                    report_pdf = gr.Button("Create personal PDF")
-                report_file = gr.File(label="Monthly financial report download")
-                report_category_file = gr.File(label="Category spending CSV download")
-
-                def report_show(r):
-                    d = {
-                        "Last 3 months": 90,
-                        "Last 6 months": 183,
-                        "Last 12 months": 365,
-                        "Entire history": None,
-                    }[r]
-                    df = personal_report(DEMO, d)
-                    fig = go.Figure()
-                    fig.add_trace(
-                        go.Bar(
-                            x=df.month,
-                            y=df.income,
-                            name="Income",
-                            marker_color="#16a38c",
-                        )
-                    )
-                    fig.add_trace(
-                        go.Bar(
-                            x=df.month,
-                            y=df.expenses,
-                            name="Expenses",
-                            marker_color="#ee825f",
-                        )
-                    )
-                    fig.add_trace(
-                        go.Scatter(
-                            x=df.month,
-                            y=df.net_cash_flow,
-                            name="Net",
-                            mode="lines+markers",
-                        )
-                    )
-                    fig.update_layout(
-                        title="Personal monthly report",
-                        barmode="group",
-                        template="plotly_white",
-                        height=340,
-                    )
-                    cats, hist, upcoming_df, factors, insights, explanation = (
-                        report_support_tables(DEMO, d)
-                    )
-                    return (
-                        df,
-                        fig,
-                        cats,
-                        hist,
-                        upcoming_df,
-                        factors,
-                        "### Account insights\n" + insights + "\n\n" + explanation,
-                    )
-
-                report_range.change(
-                    report_show,
-                    report_range,
-                    [
-                        report_table,
-                        report_chart,
-                        report_categories,
-                        report_bill_history,
-                        report_upcoming,
-                        report_health,
-                        report_insights,
-                    ],
-                )
-
-                def gen_csv(r):
-                    return export_personal_csv(
-                        DEMO,
-                        {
-                            "Last 3 months": 90,
-                            "Last 6 months": 183,
-                            "Last 12 months": 365,
-                            "Entire history": None,
-                        }[r],
-                    )
-
-                def gen_pdf(r):
-                    return export_personal_pdf(
-                        DEMO,
-                        {
-                            "Last 3 months": 90,
-                            "Last 6 months": 183,
-                            "Last 12 months": 365,
-                            "Entire history": None,
-                        }[r],
-                    )
-
-                def gen_category_csv(r):
-                    return export_category_csv(
-                        DEMO,
-                        {
-                            "Last 3 months": 90,
-                            "Last 6 months": 183,
-                            "Last 12 months": 365,
-                            "Entire history": None,
-                        }[r],
-                    )
-
-                report_csv.click(gen_csv, report_range, report_file)
-                report_pdf.click(gen_pdf, report_range, report_file)
-                report_category_csv.click(
-                    gen_category_csv, report_range, report_category_file
-                )
-                gr.Markdown(
-                    "### Strategy evaluation — synthetic held-out test (150 scenarios)\n350 development and 150 held-out scenarios are generated separately. Reported metrics use only held-out scenarios; no performance claim is hardcoded. Cost weights and scenario generation are documented in code."
-                )
-                eval_button = gr.Button(
-                    "Run held-out evaluation (may take a short while)",
-                    variant="primary",
-                )
-                eval_summary = gr.Dataframe(interactive=False)
-                eval_chart = gr.Plot()
-                eval_download = gr.File(label="Evaluation rows CSV")
-
-                def eval_cb():
-                    summary, detail = evaluate_benchmarks()
-                    fig = px.bar(
-                        summary,
-                        x="strategy",
-                        y="average_modeled_harm",
-                        color="strategy",
-                        title="Mean modeled harm on 150 synthetic test cases",
-                    )
-                    fig.update_layout(
-                        template="plotly_white", height=350, showlegend=False
-                    )
-                    path = os.path.join(
-                        tempfile.gettempdir(), "solvra-heldout-evaluation.csv"
-                    )
-                    detail.to_csv(path, index=False)
-                    return summary, fig, path
-
-                eval_button.click(
-                    eval_cb, None, [eval_summary, eval_chart, eval_download]
-                )
-                gr.Markdown(
-                    "### Extraction field-level test\nTests known fictional samples, including missing and ambiguous data; unknown values remain null and need review."
-                )
-                extract_test_btn = gr.Button("Run extraction tests")
-                extract_test_table = gr.Dataframe(interactive=False)
-                extract_accuracy = gr.Markdown()
-
-                def show_extraction_test_results():
-                    results, metrics = extraction_test_suite()
-                    message = (
-                        f"Field accuracy: {metrics['field_accuracy']:.1%} "
-                        f"({metrics['fields_tested']} synthetic fields). "
-                        "This small test set is illustrative, not a production accuracy guarantee."
-                    )
-                    return results, message
-
-                extract_test_btn.click(
-                    show_extraction_test_results,
-                    None,
-                    [extract_test_table, extract_accuracy],
-                )
-            # 9 Settings
-            with gr.Tab("Settings", id="settings"):
-                gr.Markdown(
-                    "### Demo account settings\nAll records are fictional and generated deterministically once for this process. Reset restores the same synthetic baseline, removing session changes."
-                )
-
-                def current_account_summary():
-                    return (
-                        f"**Synthetic account:** Jordan Lee · one-person Chicago household\n\n**History:** {DEMO.transactions.date.min().date()} through {AS_OF} · {len(DEMO.transactions):,} transactions · {len(DEMO.records['bill_history']):,} bill records.\n\n"
-                        f"**Checking:** {money(DEMO.balance('Checking'))} · **Savings:** {money(DEMO.balance('Savings'))} · **Debt:** {money(sum(DEMO.debts().values()))}.\n\n"
-                        f"Latest debt split: {DEMO.debts()}. Values refresh from the underlying synthetic ledger."
-                    )
-
-                with gr.Row():
-                    reset_btn = gr.Button("Reset demo account", variant="stop")
-                    settings_refresh = gr.Button("Refresh account summary")
-                    account_summary = gr.Markdown(value=current_account_summary())
-
-                def reset_demo():
-                    DEMO.reset()
-                    return (
-                        current_account_summary(),
-                        bill_df(DEMO),
-                        dashboard_kpis(DEMO),
-                        transactions_for_period(DEMO, 90),
-                        DEMO.records["bill_history"]
-                        .sort_values("due_date", ascending=False)
-                        .head(100),
-                    )
-
-                settings_refresh.click(
-                    lambda: current_account_summary(), None, account_summary
-                )
-                reset_event = (
-                    reset_btn.click(
-                        reset_demo,
-                        None,
-                        [
-                            account_summary,
-                            bills_table,
-                            kpis,
-                            trans_table,
-                            bill_history_table,
-                        ],
-                    )
-                    .then(
-                        refresh_dashboard_for, inputs=period, outputs=dashboard_outputs
-                    )
-                    .then(
-                        report_show,
-                        inputs=report_range,
-                        outputs=[
-                            report_table,
-                            report_chart,
-                            report_categories,
-                            report_bill_history,
-                            report_upcoming,
-                            report_health,
-                            report_insights,
-                        ],
-                    )
-                )
-
-                def refresh_after_account_change():
-                    return (
-                        bill_df(DEMO),
-                        DEMO.records["bill_history"]
-                        .sort_values("due_date", ascending=False)
-                        .head(100),
-                        situation_snapshot_text(),
-                        transactions_for_period(DEMO, 90),
-                    )
-
-                def refresh_planning_controls():
-                    preferences = DEMO.preferences
-                    return (
-                        preferences["planning_cash"],
-                        preferences["reserve"],
-                        preferences["paycheck"],
-                        preferences["payday"].isoformat(),
-                        preferences["other_income"],
-                        preferences["other_income_date"].isoformat(),
-                    )
-
-                report_outputs = [
-                    report_table,
-                    report_chart,
-                    report_categories,
-                    report_bill_history,
-                    report_upcoming,
-                    report_health,
-                    report_insights,
-                ]
-                account_update_events = (
-                    transaction_event,
-                    add_bill_event,
-                    edit_bill_event,
-                    extracted_bill_event,
-                    payment_event,
-                    confirmation_event,
-                    reset_event,
-                )
-                for event in account_update_events:
-                    event.then(
-                        refresh_after_account_change,
-                        None,
-                        [
-                            bills_table,
-                            bill_history_table,
-                            situation_snapshot,
-                            trans_table,
-                        ],
-                    ).then(
-                        refresh_dashboard_for,
-                        inputs=period,
-                        outputs=dashboard_outputs,
-                    ).then(
-                        report_show, inputs=report_range, outputs=report_outputs
-                    ).then(
-                        refresh_planning_controls,
-                        None,
-                        [
-                            opt_cash,
-                            opt_reserve,
-                            opt_income,
-                            opt_date,
-                            opt_other,
-                            opt_other_date,
-                        ],
-                    )
-                delete_button.click(
-                    delete_bill_cb, delete_id, [bill_msg, bills_table]
-                ).then(
-                    refresh_after_account_change,
-                    None,
-                    [bills_table, bill_history_table, situation_snapshot, trans_table],
-                ).then(
-                    refresh_dashboard_for,
-                    inputs=period,
-                    outputs=dashboard_outputs,
-                ).then(
-                    report_show, inputs=report_range, outputs=report_outputs
-                )
-                situation_event.then(
-                    situation_snapshot_text, None, situation_snapshot
-                ).then(
-                    refresh_planning_controls,
-                    None,
-                    [
-                        opt_cash,
-                        opt_reserve,
-                        opt_income,
-                        opt_date,
-                        opt_other,
-                        opt_other_date,
-                    ],
-                )
-
-                gr.Markdown(
-                    "#### Safety and data notes\n- Synthetic demonstration account only; never enter real credentials or bank data.\n- No payments are initiated and no provider is contacted.\n- Extraction values must be reviewed and confirmed. Unknown fields remain unknown.\n- Provider terms, legal protections, fees, service interruption, and credit reporting are uncertain.\n- **"
-                    + DISCLAIMER
-                    + "**"
-                )
-    app._solvra_theme = theme
-    app._solvra_css = CUSTOM_CSS
+        live.account_changed(lambda: account_panel_html(DEMO), None, panel)
+        reset.click(reset_account, None, panel)
+        app.load(lambda: account_panel_html(DEMO), None, panel)
     return app
+
+
+def launch_options() -> dict[str, Any]:
+    """Styling passed to ``Blocks.launch`` (Gradio 6 takes theme/css/js at launch time)."""
+    return {"theme": light_only_theme(), "css": APP_CSS, "js": FORCE_LIGHT_JS}
 
 
 # ---------------------------- application launch ----------------------------
 def main():
+    """Start the app; inside Google Colab it also prints a public https share link."""
     app = launch_app()
-    # In Colab, Gradio's share tunnel provides a browser-accessible URL; elsewhere bind for preview/local access.
-    in_colab = "google.colab" in __import__("sys").modules
-    launch_kwargs = {
-        "share": in_colab,
-        "server_name": "0.0.0.0",
-        "show_error": True,
-        "debug": False,
-    }
-    import gradio as gr
-
-    if int(gr.__version__.split(".")[0]) >= 6:
-        launch_kwargs.update({"theme": app._solvra_theme, "css": app._solvra_css})
-    app.launch(**launch_kwargs)
+    app.launch(
+        share="google.colab" in sys.modules,
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
+        show_error=True,
+        height=900,
+        footer_links=[],
+        **launch_options(),
+    )
 
 
 if __name__ == "__main__":

@@ -1,18 +1,35 @@
 # Solvra
 
-**Solvra is a financial decision-support prototype for people choosing among bills when cash is limited.** It combines a transparent consequence-based payment optimizer with a fictional, two-year household account, interactive financial analytics, what-if scenarios, document extraction, and optional voice interaction.
+**Solvra is a voice money assistant.** Tap **Speak live**, ask a question out loud, and Solvra answers out loud, then keeps listening, like a live voice chat. It works with a fictional household account: balances, upcoming bills, spending, debt, and a payment optimizer that suggests what to pay first when cash is tight.
 
-> **This project is a prototype and is not financial advice.** Recommendations are modeled estimates, not guarantees. Solvra does not make payments or contact providers.
+> **This project is a prototype and is not financial advice.** Answers are estimates from demo data. Solvra never makes payments or contacts providers.
+
+## What's on the page
+
+There is one page and no tabs:
+
+- **Live voice chat**: tap the big button once and talk. Solvra shows live captions while you speak, answers out loud when you pause, and then listens again. Tap the button while it's talking to interrupt. Tap **End live chat** to stop. You can also type a question or tap a suggestion.
+- **Your money**: checking, savings, debt, the total due in the next 14 days, and the list of bills to pay. It updates when you make a change by voice.
+- **Reset demo account**: puts the demo data back the way it started.
+
+Things you can say:
+
+- "How much money do I have?"
+- "What bills are due this week?"
+- "What should I pay first?" (then "Why?")
+- "When is rent due?" / "How much is my phone bill?"
+- "How much did I spend last month?" / "How much debt do I have?"
+- "Am I okay financially?"
+- "What if I pay electricity 5 days late?"
+- "I got paid 500 dollars" or "I paid my internet bill". Solvra asks first; say **yes** to record it or **no** to cancel.
 
 ## Run it in Google Colab
 
 1. Open [`Solvra_Financial_Triage.ipynb`](Solvra_Financial_Triage.ipynb) in Google Colab.
-2. Run the cells from top to bottom. The notebook installs the open-source dependencies; no paid API key is required.
-3. Optionally run the Tesseract setup cell to enable OCR for image bills. Pasted text and text-based PDFs do not need Tesseract.
-4. Review the synthetic account and held-out evaluation in the validation cell, then run **Launch Solvra**.
-5. Open the Gradio share link. Keep the Colab runtime running while you use the app.
+2. Run the cells from top to bottom. No paid API key is needed.
+3. The last cell prints a public **https** link. Open it in Chrome, Edge, or Safari, allow the microphone, and tap **Speak live**.
 
-Faster-Whisper downloads its English model the first time you transcribe audio. gTTS requires internet access to create spoken responses. Voice is optional; the text interface, dashboard, optimizer, and reports work without it.
+Keep the Colab runtime running while you use the app.
 
 ## Run locally
 
@@ -23,27 +40,19 @@ pip install -r requirements.txt
 python solvra_app.py
 ```
 
-Open the local Gradio URL shown in the terminal. Image OCR also requires the Tesseract system executable.
+Open http://localhost:7860. The microphone works on `localhost` or on an `https` link. Browsers block it on plain `http://` addresses.
 
-## What is included
+## How voice works
 
-- **Overview:** balance and cash-flow cards, six interactive charts, upcoming obligations, calculated insights, and a documented health index.
-- **Transactions and bills:** historical ledger, payment history, add/edit/delete actions, partial payments, confirmed extensions, and document extraction with review before saving.
-- **Financial situation:** planning inputs for available cash, a protected reserve, expected income and dates, and household context.
-- **Smart prioritization:** SciPy mixed-integer allocation with dated cash constraints, minimum-payment deadlines, all-or-nothing bills, late-fee estimates, interest estimates, consequence weights, and explanations.
-- **Simulations:** compare earliest due date, smallest bill first, largest bill first, and the optimizer using a shared scenario.
-- **Assistant and voice:** structured answers grounded in the account, Faster-Whisper transcription, confirmation before financial updates, and gTTS playback.
-- **Reports and evaluation:** separate personal reports and synthetic algorithm evaluation, with CSV and PDF exports where available.
+- **Chrome, Edge, and Safari** use the browser's built-in speech recognition, which gives fast, live captions. Answers are read aloud with the browser's built-in voice, so no audio files are made and no API key is needed.
+- **Other browsers (like Firefox)** record what you say until you pause, then transcribe it on the server with Faster-Whisper. It downloads a small English model the first time.
+- If the microphone is blocked, the app tells you how to allow it. Typing always works.
 
-The fictional account is generated deterministically once per process. It contains 897 ledger transactions from November 2024 through November 2026, with income, recurring bills, day-to-day spending, savings and debt history, and documented irregular events. Navigate between sections without regenerating the account. Use **Settings → Reset demo account** to restore the starting dataset.
+## How the optimizer works
 
-## How the optimizer is modeled
+"What should I pay first?" runs a SciPy `milp` model, not an LLM. It only spends cash that's available on each date, pays required minimums by their due dates, and pays bills that don't allow partial payments in full or not at all. It ranks bills by estimated late fees, interest, and serious consequences (such as losing a utility). These are modeled estimates, not quotes from providers.
 
-The optimizer is a SciPy `milp` model—not an LLM. It limits cumulative payments to cash available on each date, adds expected income only on its entered arrival date, honors applicable minimum payments by their due dates, and uses one full payment for bills that do not allow partial payments. Only confirmed extensions change a bill's effective due date.
-
-The objective estimates three kinds of harm: prorated late fees on unpaid balances, simple daily interest over the scenario horizon, and explicit dollar-equivalent weights for critical consequences. These values are assumptions for comparing plans; they are not quotes, legal conclusions, or real-world loss estimates. The interface exposes the weights and identifies uncertainty. If available funds cannot cover every obligation, the app returns an allocation and shows what remains unpaid rather than claiming a fully feasible outcome.
-
-The benchmark generator creates 350 development scenarios and 150 held-out scenarios. Results are computed on the held-out set and labeled synthetic. They should not be interpreted as a prediction of performance for real households.
+The demo account is generated the same way every time. It has 897 transactions from November 2024 to November 2026.
 
 ## Tests
 
@@ -51,11 +60,11 @@ The benchmark generator creates 350 development scenarios and 150 held-out scena
 pytest -q
 ```
 
-The tests cover deterministic account generation and ledger balances, dated cash constraints, minimum payments, non-partial bills, baseline consistency, confirmed extensions, ambiguous document extraction, confirmation-before-update, dashboard date ranges and totals, report exports, the held-out evaluation split, and Gradio interface construction.
+The tests cover the demo data, the optimizer's cash, minimum-payment and all-or-nothing rules, the what-if answers, the health score, confirmation before any account change, account reset, the voice conversation (yes/no confirmations, small talk, common questions), read-aloud text cleanup, and the one-page interface.
 
 ## Project files
 
-- `Solvra_Financial_Triage.ipynb` — executable, cell-organized Colab application.
-- `solvra_app.py` — same modular implementation for local use and testing.
-- `test_solvra_app.py` — automated regression tests.
-- `requirements.txt` — Python dependencies.
+- `solvra_app.py`: the app (demo data, optimizer, assistant, voice, and interface). Every function is used by the app.
+- `Solvra_Financial_Triage.ipynb`: the same code split into Colab cells.
+- `test_solvra_app.py`: automated tests.
+- `requirements.txt`: Python dependencies.

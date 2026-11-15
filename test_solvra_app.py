@@ -106,7 +106,6 @@ def test_optimizer_respects_cash_timing_minimum_and_all_or_nothing():
     )
 
     result = app.optimize(scenario)
-    assert result.feasible
     for payment_date in app._payment_events(scenario):
         spent = sum(p["amount"] for p in result.payments if p["date"] <= payment_date)
         assert spent <= app._available_by_date(scenario, payment_date) + 0.02
@@ -122,57 +121,6 @@ def test_optimizer_respects_cash_timing_minimum_and_all_or_nothing():
         len(whole_bill_payments) == 1
         and whole_bill_payments[0]["amount"] == pytest.approx(200)
     )
-
-
-def test_baselines_and_optimizer_use_the_same_constraints():
-    scenario = app.Scenario(
-        available_cash=420,
-        as_of=dt.date(2026, 11, 14),
-        bills=[
-            app.Bill(
-                "a",
-                "Small",
-                "Provider",
-                "Utilities",
-                75,
-                dt.date(2026, 11, 16),
-                0,
-                20,
-                0.1,
-                2,
-                "service",
-                100,
-                7,
-                partial_allowed=True,
-            ),
-            app.Bill(
-                "b",
-                "Critical",
-                "Landlord",
-                "Housing",
-                500,
-                dt.date(2026, 11, 15),
-                0,
-                0,
-                0,
-                0,
-                "housing",
-                800,
-                2,
-                partial_allowed=False,
-            ),
-        ],
-        incomes=[app.IncomeEvent(100, dt.date(2026, 11, 18))],
-        reserve=0,
-        horizon_days=35,
-    )
-
-    results = app.run_all_strategies(scenario)
-    assert len(results) == 4
-    for result in results:
-        assert result.feasible
-        assert result.total_allocated <= 520.02
-        assert result.unpaid >= 0
 
 
 def test_only_confirmed_extensions_change_the_optimizer_deadline():
@@ -191,28 +139,6 @@ def test_only_confirmed_extensions_change_the_optimizer_deadline():
     assert bill.effective_due == dt.date(2026, 11, 25)
 
 
-def test_extraction_handles_known_missing_and_ambiguous_values():
-    results, metrics = app.extraction_test_suite()
-    assert metrics["field_accuracy"] == 1.0
-    assert len(results) > 10
-
-    whole_dollar_bill = app.extract_bill_fields(
-        "ComEd\nAmount Due: $100\nDue Date: 11/30/2026"
-    )
-    assert whole_dollar_bill["fields"]["amount"] == 100.0
-    assert whole_dollar_bill["fields"]["provider"] == "ComEd"
-
-    ambiguous = app.extract_bill_fields(
-        "Utility Statement\nAmount Due: $140 or $160\nDue Date: 11/30/2026"
-    )
-    assert ambiguous["fields"]["amount"] is None
-    assert "review" in ambiguous["confidence"]["amount"]
-
-    missing = app.extract_bill_fields("A provider\nDue Date: 11/30/2026")
-    assert missing["fields"]["amount"] is None
-    assert missing["fields"]["late_fee"] is None
-
-
 def test_account_updates_require_confirmation_and_sync_the_ledger():
     store = app.AccountStore(app.generate_demo_records())
     initial_balance = store.balance("Checking")
@@ -224,94 +150,116 @@ def test_account_updates_require_confirmation_and_sync_the_ledger():
     assert store.balance("Checking") == initial_balance
 
     confirmation = app.confirm_account_update(pending, True, store)
-    assert "Confirmed" in confirmation
+    assert confirmation.startswith("Done")
     assert store.balance("Checking") == pytest.approx(initial_balance + 200)
     assert store.records["income_history"].iloc[-1].amount == 200
 
 
-def test_dashboard_ranges_use_exact_dates_and_match_ledger_values():
-    charts = app.dashboard_charts(app.DEMO, "Last 30 days")
-    cashflow, spending_mix, cash_balances, debt, categories, essentials = charts
-    cutoff = app.AS_OF - dt.timedelta(days=29)
-    x_values = pd.to_datetime(cash_balances.data[0].x)
+def test_gradio_interface_is_a_single_page_with_live_voice():
+    import gradio as gr
 
-    assert len(x_values) == 30
-    assert x_values[0].date() == cutoff
-    assert cash_balances.data[0].y[-1] == pytest.approx(app.DEMO.balance("Checking"))
-    assert cash_balances.data[1].y[-1] == pytest.approx(app.DEMO.balance("Savings"))
-
-    tx = app.DEMO.transactions
-    recent = tx[(tx.date.dt.date >= cutoff) & (tx.date.dt.date <= app.AS_OF)]
-    expected_income = recent.loc[
-        (recent.category == "Income") & (recent.amount > 0), "amount"
-    ].sum()
-    expected_expenses = -recent.loc[
-        (recent.amount < 0) & (~recent.category.isin(["Transfers", "Income"])), "amount"
-    ].sum()
-    assert sum(cashflow.data[0].y) == pytest.approx(expected_income)
-    assert sum(cashflow.data[1].y) == pytest.approx(expected_expenses)
-    assert sum(spending_mix.data[0].values) == pytest.approx(
-        app.category_spending(app.DEMO, cutoff, app.AS_OF).spending.sum()
-    )
-    assert len(debt.data) == 3
-    assert len(categories.data) > 0
-    assert len(essentials.data) == 2
-
-    weekly_charts = app.dashboard_charts(app.DEMO, "Last 90 days")
-    assert 12 <= len(weekly_charts[0].data[0].x) <= 14
+    interface = app.launch_app()
+    blocks = list(interface.blocks.values())
+    assert not any(isinstance(b, (gr.Tabs, gr.Tab)) for b in blocks)
+    live = next(b for b in blocks if getattr(b, "elem_id", None) == "sv-live-wrap")
+    assert {fn.__name__ for fn in live.server_fns} == {"live_turn", "transcribe_clip"}
+    assert "account_changed" in live.js_on_load
+    reply = app.live_turn({"text": "How much money do I have?", "pending": None, "last": ""})
+    assert "checking" in reply["reply"] and reply["pending"] is None
+    options = app.launch_options()
+    assert {"theme", "css", "js"} <= set(options)
+    # Dark mode must not change any colour (it made labels invisible before).
+    theme = options["theme"]
+    assert theme.body_text_color_dark == theme.body_text_color
+    assert theme.body_background_fill_dark == theme.body_background_fill
 
 
-def test_dashboard_report_and_health_score_are_populated():
-    assert len(app.DEMO.transactions) >= 800
-    assert not app.upcoming_frame(app.DEMO).empty
-    assert len(app.dashboard_charts(app.DEMO, "Entire 24-month history")) == 6
+def test_live_turn_handles_voice_confirmation_and_small_talk():
+    store = app.AccountStore(app.generate_demo_records())
+    start = store.balance("Checking")
 
-    report = app.personal_report(app.DEMO, None)
-    assert {
-        "income",
-        "expenses",
-        "net_cash_flow",
-        "savings",
-        "total_debt",
-        "late_payments",
-    }.issubset(report.columns)
-    score, factors, explanation = app.health_assessment(app.DEMO)
+    turn = app.assistant_turn("Hey Solvra, I got paid $500 today", None, "", store)
+    assert turn["pending"]["action"] == "income" and turn["pending"]["amount"] == 500
+    assert store.balance("Checking") == start
+
+    declined = app.assistant_turn("no thanks", turn["pending"], "", store)
+    assert declined["pending"] is None and not declined["changed"]
+    assert store.balance("Checking") == start
+
+    turn = app.assistant_turn("I got paid $500 today", None, "", store)
+    # A new question while an update is pending must never confirm it by accident.
+    other = app.assistant_turn("okay what should I pay first", turn["pending"], "", store)
+    assert not other["changed"] and store.balance("Checking") == start
+
+    confirmed = app.assistant_turn("Yes please", turn["pending"], "", store)
+    assert confirmed["changed"] and confirmed["pending"] is None
+    assert store.balance("Checking") == pytest.approx(start + 500)
+
+    assert "Solvra" in app.assistant_turn("hello", None, "", store)["reply"]
+    assert app.assistant_turn("goodbye", None, "", store)["end"] is True
+    assert "pay first" in app.assistant_turn("what can you do", None, "", store)["reply"]
+
+
+def test_common_spoken_questions_get_direct_answers():
+    store = app.AccountStore(app.generate_demo_records())
+    ask = lambda q: app.assistant_turn(q, None, "", store)["reply"]
+
+    assert "Dec 1" in ask("When is rent due?")
+    assert "T-Mobile" in ask("how much is my phone bill")
+    assert ask("What should I pay first?").startswith("Here's what I'd pay first")
+    assert "due in the next 7 days" in ask("What bills are due this week?")
+    assert "out of 100" in ask("Am I okay financially?")
+    assert "late fees" in ask("What if I pay electricity 5 days late?")
+    assert "not sure" in ask("tell me a joke")
+
+
+def test_speech_text_reads_naturally():
+    spoken = app.speech_text("**Rent** is $1,425.00, due 2026-12-01; gas is $58.00 & tax $19.99.")
+    assert spoken == "Rent is $1,425, due Dec 1; gas is $58 and tax $19.99."
+
+
+def test_account_panel_and_transcription_guard():
+    panel = app.account_panel_html(app.DEMO)
+    assert "Checking" in panel and "Electricity" in panel and "<script" not in panel
+    blocked = app.transcribe_clip({"path": "/etc/passwd"})
+    assert blocked["text"] == "" and blocked["error"]
+
+
+def test_payment_plan_and_what_ifs_stay_within_cash():
+    store = app.AccountStore(app.generate_demo_records())
+    plan = app.optimize(app.scenario_from_account(store))
+    assert plan.total_allocated <= store.balance("Checking") + 0.01
+    assert plan.harm["total_harm"] >= 0 and plan.unpaid >= 0
+
+    tight = app.scenario_from_account(store)
+    tight.available_cash = 150
+    tight_plan = app.optimize(tight)
+    assert tight_plan.total_allocated <= 150.01
+    assert tight_plan.unpaid > plan.unpaid
+
+    rent = next(b for b in store.bills if b.name == "Rent")
+    delayed = app.simulate_delay(app.scenario_from_account(store), rent.bill_id, 3)
+    assert delayed.total_allocated <= store.balance("Checking") + 0.01
+    assert rent.effective_due == dt.date(2026, 12, 1)  # the real bill is untouched
+
+    electricity = next(b for b in store.bills if b.name == "Electricity")
+    on_time = app.simulate_late_payment(electricity, 0)
+    late = app.simulate_late_payment(electricity, 30)
+    assert late.harm["total_harm"] > on_time.harm["total_harm"]
+
+
+def test_health_score_is_bounded_and_weighted():
+    score, factors = app.health_assessment(app.DEMO)
     assert 0 <= score <= 100
     assert len(factors) == 7
     assert factors.weight.sum() == pytest.approx(1.0)
-    assert "income-to-expense" in explanation
 
 
-def test_personal_csv_and_pdf_exports_are_created():
-    csv_path = app.export_personal_csv(app.DEMO, 90)
-    category_path = app.export_category_csv(app.DEMO, 90)
-    pdf_path = app.export_personal_pdf(app.DEMO, 90)
-
-    assert pd.read_csv(csv_path).shape[0] > 0
-    assert pd.read_csv(category_path).shape[0] > 0
-    with open(pdf_path, "rb") as report:
-        assert report.read(4) == b"%PDF"
-
-
-def test_held_out_evaluation_uses_all_four_strategies():
-    scenarios, labels = app.generate_evaluation_scenarios()
-    assert len(scenarios) == 500
-    assert labels.count("development") == 350
-    assert labels.count("held-out test") == 150
-
-    summary, detail = app.evaluate_benchmarks(force=True)
-    assert len(detail) == 150 * 4
-    assert set(detail.strategy) == {
-        "Earliest Due Date",
-        "Smallest Bill First",
-        "Largest Bill First",
-        "Intelligent optimization",
-    }
-    assert summary.average_modeled_harm.notna().all()
-    assert summary.feasibility_rate.between(0, 1).all()
-
-
-def test_gradio_interface_builds_without_launching_a_tunnel():
-    interface = app.launch_app(share=False)
-    assert interface is not None
-    assert len(interface.blocks) >= 200
+def test_reset_restores_the_demo_account():
+    store = app.AccountStore(app.generate_demo_records())
+    start = store.balance("Checking")
+    pending = app.answer_financial_question("I got paid $250", store)[1]
+    app.confirm_account_update(pending, True, store)
+    assert store.balance("Checking") == pytest.approx(start + 250)
+    store.reset()
+    assert store.balance("Checking") == pytest.approx(start)
