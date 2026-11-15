@@ -11,6 +11,10 @@ from typing import Any
 import pandas as pd
 
 import solvra_app as f
+from solvra_savings_model import (
+    CATEGORIES as SAVINGS_CATEGORIES,
+    recommend as savings_recommendation,
+)
 
 
 @dataclass(frozen=True)
@@ -398,6 +402,14 @@ def dashboard(account: f.AccountStore, period_key: str = "month") -> dict[str, A
     balances = account.records["balance_history"].tail(6)
     score, factors = f.health_assessment(account)
     recent = account.transactions.sort_values(["date", "transaction_id"], ascending=False).head(6)
+    model_period = reporting_period("90days")
+    model_spend = spending_rows(account, model_period).groupby("category").amount.sum().abs()
+    monthly_spend = {
+        category: float(model_spend.get(category, 0.0)) * 30.0 / model_period.days
+        for category in SAVINGS_CATEGORIES
+    }
+    monthly_income = max(0.0, float(current["income"])) * 30.0 / period.days
+    savings_model = savings_recommendation(monthly_income, monthly_spend)
     return {
         "as_of": f.AS_OF.isoformat(),
         "period_key": period_key,
@@ -414,6 +426,7 @@ def dashboard(account: f.AccountStore, period_key: str = "month") -> dict[str, A
         "totals": current,
         "previous": previous,
         "buffer": planning_buffer(account),
+        "savings_model": savings_model,
         "bills": [bill_dict(b) for b in bills],
         "bill_total": round(sum(b.amount for b in bills), 2),
         "categories": [

@@ -98,6 +98,12 @@ The app uses `local_files_only=True` and never attempts a hidden model download.
 - If bars move but captions do not, try offline mode. If bars do not move, check the selected input, system mute, and site permissions.
 - Browser/device behavior varies. Automated tests exercise capture state, simulated recognition, permission denial, late permission grants, actual offline audio decoding, and uploads; they do not replace testing a physical microphone on every browser.
 
+## Savings-category ML experiment
+
+The Insights page now includes a scikit-learn classifier that ranks one expense category to review, plus its held-out evaluation and a uniform-allocation baseline. Its training/test data are **generated synthetic monthly budgets**, not one of the external datasets in the hackathon guide. Labels come from an explicit toy rule that computes hypothetical headroom (with lower flexibility for essential categories). The split keeps whole synthetic profiles separate between training and test. The current deterministic run uses 3,000 training profiles and 1,000 held-out profiles; the classifier reached 91.5% top-category accuracy versus the uniform-allocation expected hit rate of 12.5%.
+
+Those numbers measure how well the classifier reproduces its synthetic rule—not real savings outcomes, real-user accuracy, or a proven financial benefit. The displayed dollar figure is rule-calculated hypothetical headroom, not a model forecast. This deliberately synthetic experiment is not a substitute for evaluation on a relevant licensed real-world dataset. Do not present the result as real-world validation. The synthetic generator, target heuristic, training split, test, and example are also exposed in the Colab notebook.
+
 ## The assistant and suggestions
 
 Solvra combines **Grok AI via Puter** for broad, conversational financial guidance with an **explainable local finance engine** for account calculations and every confirmed change. Answers identify which engine produced them. The account is still a fictional demo, not a connected bank account.
@@ -228,6 +234,7 @@ AI regressions use a deterministic Puter response stub with the real session/con
 
 - `solvra_app.py` — deterministic account data, ledger, optimizer, compatibility entry points, Gradio launch.
 - `solvra_profiles.py` — public fictional people, reproducible scenario recipes, profile-aware seed/reset.
+- `solvra_savings_model.py` — scikit-learn savings-category classifier, generated synthetic training/test profiles, and explicitly heuristic labels. Its reported score measures agreement with generated labels only; it is not evidence of real-world savings performance.
 - `solvra_insights.py` — explainable six-factor financial-trouble triage, shared reporting windows, dashboard calculations, affordability, evidence-backed insights, plan serialization.
 - `solvra_assistant.py` — local financial intent handling, multi-turn context, spoken amounts, staged changes, sourced answers.
 - `solvra_ai.py` — Grok finance-only prompts, bounded account context, structured output and read-only validation.
