@@ -197,6 +197,7 @@ def test_ai_guardrails_tab_tests_prompts_and_keeps_the_ledger_unchanged(page):
     page.locator('.main-nav [data-view="guardrails"]').click()
     page.wait_for_selector("#guardrail-form")
     assert "AI guardrails" in page.locator("#page-title").inner_text()
+    assert page.locator(".guardrail-runtime-warning").count() == 0
     assert page.locator(".guardrail-history-empty").is_visible()
 
     page.locator('[data-guardrail-scenario="safe-finance"]').click()

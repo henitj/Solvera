@@ -134,6 +134,7 @@ def test_ai_answer_updates_one_owned_record_and_its_authorized_speech(session, m
     assert "$19,259.44" in finished["sources"][0]["detail"]
     assert "$7,740.00" in finished["sources"][0]["detail"]
     restored = w.workspace_action({"op": "bootstrap", "session": session["session"]})
+    assert restored["guardrails"] == {"history": [], "requests": 0, "blocked": 0, "allowed": 0}
     assert len(restored["messages"]) == 2
     assert restored["messages"][-1]["engine"] == "puter"
     assert "forty-four cents" in restored["messages"][-1]["speech"]
