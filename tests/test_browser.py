@@ -191,6 +191,7 @@ def test_inline_voice_sends_one_clean_turn_without_opening_a_dialog(page):
     page.locator("#voice-launch").click()
     page.wait_for_function("window.__recognizer?.started")
     assert not page.locator("#voice-dialog").evaluate("dialog => dialog.open")
+    assert page.locator("#voice-auto").count() == 0
     assert page.locator("#inline-voice-status").is_visible()
 
     # An unexpected interim hypothesis must never send a partial question.
@@ -216,28 +217,31 @@ def test_inline_voice_sends_one_clean_turn_without_opening_a_dialog(page):
     assert page.locator("#inline-voice-status").is_hidden()
 
 
-def test_inline_voice_can_leave_one_reviewable_draft_when_auto_send_is_off(page):
+def test_dialog_voice_sends_a_final_browser_question_automatically(page):
     page.add_init_script(RECOGNIZER)
     open_workspace(page)
     page.locator("#settings-button").click()
     page.locator('[data-action="voice-settings"]').click()
-    page.locator(".voice-settings summary").click()
-    page.locator("#voice-auto").uncheck()
-    page.locator("#close-voice").click()
-
-    page.locator("#chat-mic").click()
+    page.locator("#voice-read").uncheck()
+    page.locator("#voice-start").click()
     page.wait_for_function("window.__recognizer?.started")
-    emit_transcript(page, "What is my checking balance?")
-    page.wait_for_function(
-        "document.querySelector('#inline-voice-status').dataset.phase === 'review'",
-    )
 
-    assert page.locator("#chat-input").input_value() == "What is my checking balance?"
+    # A stray interim hypothesis is not a completed question and must not send.
+    page.evaluate(
+        """() => {
+        const results = [[{transcript:'What is my checking', confidence:0.99}]];
+        results[0].isFinal = false;
+        window.__recognizer.onresult({resultIndex:0, results});
+        }""",
+    )
     assert page.locator(".chat-message").count() == 0
-    page.locator("#chat-send").click()
+
+    emit_transcript(page, "What is my checking balance?")
     page.wait_for_selector(".chat-message.assistant", state="attached")
     assert page.locator(".chat-message.user").count() == 1
+    assert page.locator(".chat-message.user .message-text").inner_text() == "What is my checking balance?"
     assert "$19,259.44" in page.locator(".chat-message.assistant").inner_text()
+    assert page.locator("#voice-dialog").evaluate("dialog => dialog.open")
 
 
 def test_permission_denial_is_actionable_and_does_not_hang(page):
@@ -300,7 +304,6 @@ def test_actual_offline_upload_is_reviewed_and_never_auto_sent(page):
     open_workspace(page)
     page.locator("#attach-audio").click()
     page.locator(".voice-settings summary").click()
-    page.locator("#voice-auto").check()
     fixture = Path(__file__).parent / "fixtures" / "goforward.flac"
     page.locator("#audio-upload").set_input_files(fixture)
     page.wait_for_function(
@@ -397,7 +400,7 @@ def test_missing_or_unavailable_microphone_is_reported(page, error_name, expecte
     assert page.locator(".chat-message").count() == 0
 
 
-def test_recorded_microphone_fallback_uploads_decodes_and_requires_review(browser, tmp_path):
+def test_recorded_microphone_fallback_uploads_decodes_and_sends_automatically(browser, tmp_path):
     # Supply prerecorded speech to Chromium's fake microphone, not the runner's mic.
     import numpy as np
     from scipy.io.wavfile import write
@@ -437,16 +440,17 @@ navigator.mediaDevices.getUserMedia = async (constraints) => {
         page.wait_for_function("window.__recognizer?.started")
         page.evaluate("window.__recognizer.onerror({error:'network'})")
         page.wait_for_function(
-            "document.querySelector('#inline-voice-status').dataset.phase === 'review'",
+            "document.querySelectorAll('.chat-message.user').length === 1",
             timeout=45000,
         )
-        # Lossy browser encoding can change a word. The recovery transcript stays
-        # in the composer for review and must not auto-send a chat turn.
-        transcript = page.locator("#chat-input").input_value().lower()
+        # Local fallback is part of the same one-turn flow: the completed
+        # transcript is processed and sent without another click.
+        transcript = page.locator(".chat-message.user .message-text").inner_text().lower()
         assert "go forward" in transcript and len(transcript.split()) >= 3
         assert not page.locator("#voice-dialog").evaluate("dialog => dialog.open")
-        assert page.locator(".chat-message").count() == 0
-        assert page.locator("#chat-send").is_enabled()
+        page.wait_for_selector(".chat-message.assistant")
+        assert page.locator("#chat-input").input_value() == ""
+        assert page.locator("#inline-voice-status").is_hidden()
         assert page.evaluate(
             "window.__capturedStream.getTracks().every(t => t.readyState === 'ended')"
         )

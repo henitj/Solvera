@@ -67,7 +67,7 @@ class VoiceController {
         "idle",
         "Ready when you are",
         this.selectedMode() === "offline"
-          ? "Offline English recording. Stop, review, then send."
+          ? "Offline English recording. Pause or stop when done; Solvra will process and send it."
           : "Browser speech recognition with live captions.",
       );
       $("voice-language").disabled = this.selectedMode() === "offline";
@@ -118,7 +118,6 @@ class VoiceController {
   configure(caps) {
     this.caps = caps || {};
     this.player.configure(this.caps.speech);
-    if ($("voice-auto")) $("voice-auto").checked = true;
     $("voice-engine").options[1].disabled = !this.caps.offline;
     if (!this.SR && !this.caps.offline)
       this.error(
@@ -290,7 +289,7 @@ class VoiceController {
           ? "Speak and watch the bars. Nothing from this test is uploaded."
           : this.mode === "browser"
             ? "Your words appear below. Pause or tap Stop when you’re done."
-            : "Speak clearly, then pause or tap Stop. You’ll review the transcript before sending.",
+            : "Speak clearly, then pause or tap Stop. Solvra will process and send one question.",
       );
       this.beginMeter(stream, ctx, epoch, testOnly);
       if (!testOnly && this.mode === "browser") this.beginBrowser(epoch);
@@ -463,13 +462,14 @@ class VoiceController {
     } catch {
       this.fallbackToOffline(
         epoch,
-        "Browser recognition could not start. Use offline recording, then review the result.",
+        "Browser recognition could not start. Use offline recording; Solvra will process and send the completed question.",
       );
       return;
     }
     this.recognition = rec;
     rec.lang = $("voice-language").value;
-    rec.interimResults = true;
+    // A completed voice question must never be sent from an interim caption.
+    rec.interimResults = false;
     rec.continuous = true;
     rec.maxAlternatives = 1;
     let hadError = false;
@@ -477,7 +477,7 @@ class VoiceController {
       if (epoch !== this.epoch || this.phase !== "listening") return;
       // Result indexes are stable for a recognition session. Replacing changed
       // entries prevents Chrome/Safari revisions from being appended twice.
-      this.updateRecognitionSegments(event, this.browserSegments);
+      this.updateRecognitionSegments(event, this.browserSegments, true);
       this.transcript = this.cleanVoiceTranscript(
         [...this.browserSegments.values()].join(" "),
       );
@@ -558,7 +558,7 @@ class VoiceController {
     this.setPhase(
       "listening",
       "Recording offline.",
-      message + " Pause or tap Stop when done. Review is always required.",
+      message + " Pause or tap Stop when done. Solvra will process and send the completed question.",
     );
   }
   detachRecognition() {
@@ -608,7 +608,7 @@ class VoiceController {
     this.releaseResources();
     this.syncButtons();
   }
-  async finishCapture({ forceReview = false } = {}) {
+  async finishCapture() {
     if (this.phase === "requesting") {
       this.cancelCapture();
       this.setPhase(
@@ -658,16 +658,16 @@ class VoiceController {
       this.transcript = text;
       this.setPhase(
         "review",
-        "Here’s what we heard.",
-        "Review or edit your question, then send. Your microphone is off.",
+        "Question ready.",
+        "Sending your completed voice question. Your microphone is off.",
       );
-      if ($("voice-auto").checked && !forceReview) this.sendTranscript();
+      await this.sendTranscript();
       return;
     }
     if (chunks.length && this.caps.offline) {
       const type = mime.includes("mp4") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
       const file = new File(chunks, "solvra-voice." + type, { type: mime });
-      await this.transcribeFile(file, epoch);
+      await this.transcribeFile(file, epoch, { sendWhenReady: true });
       return;
     }
     this.error(
@@ -675,7 +675,7 @@ class VoiceController {
       true,
     );
   }
-  async transcribeFile(file, epoch) {
+  async transcribeFile(file, epoch, { sendWhenReady = false } = {}) {
     if (file.size > 15 * 1024 * 1024) {
       this.error("Choose an audio recording smaller than 15 MB and shorter than 45 seconds.");
       return;
@@ -699,13 +699,15 @@ class VoiceController {
       if (epoch !== this.epoch) return;
       this.transcript = this.cleanVoiceTranscript(res.text);
       $("voice-transcript").value = this.transcript;
-      // Local fallback and uploaded audio must be reviewed: PocketSphinx is a
-      // privacy-preserving recovery engine, not a high-confidence live captioner.
+      if (!this.transcript) throw new Error("No words were detected. Try again or type your question.");
       this.setPhase(
         "review",
-        "Check what we heard.",
-        `${res.engine || "Offline English"} transcript. You can edit it or tap Send. Your microphone is off.`,
+        sendWhenReady ? "Question ready." : "Check what we heard.",
+        sendWhenReady
+          ? `${res.engine || "Offline English"} finished processing. Sending your voice question now.`
+          : `${res.engine || "Offline English"} transcript. You can edit it or tap Send. Your microphone is off.`,
       );
+      if (sendWhenReady) await this.sendTranscript();
     } catch (e) {
       if (epoch === this.epoch)
         this.error(
@@ -714,8 +716,7 @@ class VoiceController {
     }
   }
   async sendTranscript() {
-    if (["listening", "testing", "requesting"].includes(this.phase))
-      await this.finishCapture({ forceReview: true });
+    if (["listening", "testing", "requesting"].includes(this.phase)) await this.finishCapture();
     const text = $("voice-transcript").value.trim();
     if (!text || ["transcribing", "thinking"].includes(this.phase) || state.busy) return;
     this.awaitingReply = true;
@@ -746,27 +747,24 @@ class VoiceController {
     }
     answer.textContent = text;
     answer.hidden = false;
-    let played = false;
     if ($("voice-read").checked) {
       this.setPhase(
         "speaking",
         "Here’s what the numbers say.",
         "Tap Interrupt & speak to ask a follow-up.",
       );
-      played = await this.speak({
+      await this.speak({
         ...response,
         id: response.message_id,
         content: text,
       });
     }
     if (epoch !== this.epoch || !this.voiceSession || !$("voice-dialog").open) return;
-    if (played && $("voice-auto").checked && this.phase === "speaking") this.start();
-    else
-      this.setPhase(
-        "review",
-        "Ready for a follow-up?",
-        "Your microphone is off. Start listening again, or return to the conversation.",
-      );
+    this.setPhase(
+      "review",
+      "Ready for a follow-up?",
+      "Your microphone is off. Start listening again, or return to the conversation.",
+    );
   }
   stopSpeaking() {
     this.player.stop();
@@ -916,13 +914,6 @@ class VoiceController {
     const input = $("chat-input");
     if (input) input.placeholder = "Ask anything about your money…";
   }
-  clearInlineReview(sentText = "") {
-    if (
-      this.inlinePhase === "review" &&
-      (!sentText || this.cleanVoiceTranscript(sentText) === this.inlineText)
-    )
-      this.resetInlineUI();
-  }
   detachInlineRecognition() {
     const rec = this.inlineRec;
     this.inlineRec = null;
@@ -940,7 +931,6 @@ class VoiceController {
       ++this.inlineGeneration;
       this.stopInline(false);
     } else if (this.inlineActive) this.stopInline(true);
-    else if (this.inlinePhase === "review") this.clearInlineReview();
     else this.startInline();
   }
   async startInline() {
@@ -1138,9 +1128,9 @@ class VoiceController {
           if (generation !== this.inlineGeneration || !state.profile) return;
           const text = this.cleanVoiceTranscript(res.text);
           if (!text) throw new Error("No words were detected. Try again or type your question.");
-          // Offline transcripts can be much less accurate than browser recognition.
-          // Keep this recovery path in the composer, never in a new voice popup.
-          this.offerInlineReview(text, res.engine || "Offline transcript");
+          // A spoken question remains one flow even when recognition falls back
+          // locally: process the completed audio, then send exactly one turn.
+          await this.sendInlineText(text, generation);
         } catch (error) {
           if (generation === this.inlineGeneration) {
             this.resetInlineUI();
@@ -1157,21 +1147,6 @@ class VoiceController {
         toast("Microphone could not start: " + (error.message || "permission denied"), true);
       }
     }
-  }
-  offerInlineReview(text, engine) {
-    const input = $("chat-input");
-    this.inlineActive = false;
-    this.inlineShouldSend = false;
-    this.inlineText = this.cleanVoiceTranscript(text);
-    if (input) {
-      input.value = this.inlineText;
-      input.placeholder = "Review the transcript, then send";
-      input.focus({ preventScroll: true });
-    }
-    this.setInlineStatus(
-      "review",
-      `${engine} needs a quick check. Review the draft, then tap Send.`,
-    );
   }
   async sendInlineText(text, generation) {
     text = this.cleanVoiceTranscript(text);
@@ -1214,8 +1189,7 @@ class VoiceController {
       this.inlineStream = null;
     }
     if (send && text) {
-      if ($("voice-auto")?.checked === false) this.offerInlineReview(text, "Transcript");
-      else void this.sendInlineText(text, this.inlineGeneration);
+      void this.sendInlineText(text, this.inlineGeneration);
       return;
     }
     this.resetInlineUI();
