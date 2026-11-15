@@ -97,6 +97,24 @@ def output_format(name: str, properties: dict) -> dict:
 
 
 SCOPE = {"type": "string", "enum": ["finance", "off_topic"]}
+# The visible monitor does not call a model. Its custom-prompt path therefore
+# uses a deliberately broad personal-finance vocabulary and fails closed when a
+# topic cannot be recognized locally. The real assistant still has its separate
+# model scope gate for nuanced finance questions before any context is shared.
+LOCAL_FINANCE_TOPIC = re.compile(
+    r"\b(?:"
+    r"account(?:s|ing)?|afford|apr|balance|bank(?:ing)?|bill(?:s|ing)?|bond(?:s)?|"
+    r"borrow(?:ed|ing)?|budget(?:ing|ed|s)?|cash(?:\s+flow)?|checking|credit(?:\s+(?:card|report|score))?|"
+    r"cost(?:s|ing)?|debt|deduct(?:ible|ion)?|diversif(?:y|ication)|dollar(?:s)?|"
+    r"emergency\s+fund|estate|etf(?:s)?|expense(?:s)?|fee(?:s)?|finance|financial|"
+    r"fraud|income|inheritance|insurance|interest|invest(?:ed|ing|ment|ments)?|ira|"
+    r"ledger|loan(?:s)?|money|mortgage|pension|pay(?:check|roll|ing|ment|ments)?|"
+    r"portfolio|premium(?:s)?|principal|purchase(?:s)?|refund(?:s)?|rent(?:al)?|"
+    r"retir(?:e|ement|ing)|salary|savings?|scam(?:s)?|spend(?:ing)?|stock(?:s)?|"
+    r"tax(?:es|ation)?|transaction(?:s)?|utilities?|wage(?:s)?"
+    r")\b|\b(?:estate\s+planning|last\s+will|401\s*\(?k\)?)\b|\$\s*\d",
+    re.IGNORECASE,
+)
 GUARD_FORMAT = output_format("solvra_finance_scope", {"scope": SCOPE})
 ANSWER_FORMAT = output_format(
     "solvra_financial_guidance",
@@ -119,6 +137,15 @@ def blocked_prompt(text: str) -> bool:
             re.IGNORECASE | re.DOTALL,
         )
     )
+
+
+def recognizable_finance_topic(text: str) -> bool:
+    """Return whether a custom monitor prompt has a local finance-topic signal.
+
+    This is intentionally a conservative checker for the no-model Security
+    Monitor. It is not the real assistant's semantic scope classifier.
+    """
+    return bool(LOCAL_FINANCE_TOPIC.search(text))
 
 
 def question_guardrail(text: str, profile: dict | None = None) -> str | None:
@@ -263,6 +290,12 @@ def guardrail_decision(text: str, profile: dict | None = None) -> dict[str, str]
             "decision": "block",
             "category": "Out-of-scope or unsafe",
             "reason": refusal,
+        }
+    if not recognizable_finance_topic(prompt):
+        return {
+            "decision": "block",
+            "category": "Out-of-scope or unsafe",
+            "reason": "This monitor accepts finance questions only. No recognizable finance topic was found, so the request was blocked before any AI or account access.",
         }
     return {
         "decision": "allow",
