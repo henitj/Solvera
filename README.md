@@ -54,15 +54,15 @@ This is **not production authentication or durable storage**. Anyone can choose 
 
 November is a **partial month**. Month-to-date comparisons use the same days of the previous month, not an entire completed month; rolling and multi-month windows use the full preceding equal-length window. Transfers are excluded from reported spending. Income-related health factors use completed months, and upcoming/partial bills are not counted as on-time payment history. Expected income is not presented as available checking cash.
 
-## Voice: visible capture, review, and recovery
+## Voice: one tap, one clean turn
 
-1. Tap **Talk to Solvra**. The app checks microphone access and shows a live input meter.
-2. In supported Chrome, Edge, and Safari versions, browser recognition supplies live captions. Pause or tap **Stop listening** to review the words.
-3. Edit the transcript if necessary, then **Send question**. Auto-send is opt-in in voice settings. Recording/transcription alone does not send a chat question.
-4. If the browser's remote speech service fails or stops returning words, the app can use **offline record & review** instead. You can also select this mode directly or upload a recording.
-5. Use **Test microphone only** and the device selector to distinguish a blocked input, a silent microphone, and a speech-service failure. The mic test does not upload audio.
+1. Tap **Ask by voice** in the assistant composer (or the microphone icon). Capture stays in that composer—there is no separate speaking popup.
+2. In supported Chrome, Edge, and Safari versions, browser recognition waits for final words instead of placing partial captions in the text box. Indexed recognition segments replace revised results rather than append them, and adjacent repeated phrases are removed before the question is sent.
+3. Pause or tap the microphone to finish. By default, Solvra sends **one** cleaned question and returns the answer in the same conversation. Turn off **Send after a complete question** in Voice settings to keep a recognized draft in the composer for manual Send instead.
+4. If browser recognition fails, the app records a local fallback and places its finished transcript in the same composer for review—never in a new popup. You can also select offline mode directly or upload a recording.
+5. Use **Test microphone only** and the device selector in Voice settings to distinguish a blocked input, a silent microphone, and a speech-service failure. The mic test does not upload audio.
 
-The offline English model ships with **PocketSphinx**: no API key, internet connection, or first-use model download is needed. It is less accurate than modern cloud recognition, so offline transcripts **always require review**, even when auto-send is enabled. Supported uploads include WAV, WebM/Opus, MP3, M4A, OGG, and FLAC, limited to **45 seconds / 15 MB**. Audio is decoded and resampled on the server; the server does not need its own microphone.
+The bundled offline English model uses **PocketSphinx**: no API key, internet connection, or first-use model download is needed. It is a recovery path and less accurate than modern browser or Whisper recognition, so offline transcripts **always require review**. Supported uploads include WAV, WebM/Opus, MP3, M4A, OGG, and FLAC, limited to **45 seconds / 15 MB**. Audio is decoded and resampled on the server; the server does not need its own microphone.
 
 Microphone tracks and audio contexts are released on stop, close, page hide, navigation away, permission failure, and canceled/in-flight capture. Read-aloud uses local Kokoro neural speech by default and can be disabled. Interrupting an answer cancels playback before starting capture.
 
@@ -183,7 +183,7 @@ This is a single-process prototype, not an authenticated financial service. It i
 
 1. Start the server and keep it running. Preload natural speech before presenting: `python -m solvra_speech` (use the same `SOLVRA_TTS_DIR` for setup and the server if you override it).
 2. Open the preview/public **HTTPS link in its own tab**. Choose Maya, log in, and use **Settings → Voice & read-aloud → Preview voice** to verify the actual presentation speakers. No microphone permission is needed for read-aloud.
-3. Test the **physical microphone on the presentation device**. Allow permission, check the meter and captions, review/send a balance question. If the browser speech service fails, use offline record/review or type; do not rely on a live remote service as the only path.
+3. Test the **physical microphone on the presentation device**. Allow permission, ask a balance question from the composer, and verify it becomes one clean chat turn. If the browser speech service fails, review the local fallback draft or type; do not rely on a live remote service as the only path.
 4. Demonstrate Maya's healthy buffer, then **Settings → Log out → Marcus → Log in to demo** to show a genuinely different ledger, arrears, repair expense and Critical triage. Inspect the factor rules and calculate a bill plan. Jordan and Aisha provide intermediate stress scenarios.
 5. For live Grok, explicitly consent and sign in to **your own Puter account** on that device, confirm its allowance, ask about the ranking, and inspect **Grok AI** plus account sources. Logout disconnects AI, so reconnect/consent for another person. Also ask a weather/mixed-topic question to demonstrate the guardrail. No authenticated live provider call is claimed by the automated tests.
 6. Try a recorded deposit and cancel it, then confirm a small example and watch the same dashboard update. Reset that person before the main presentation if desired. Demonstrate logout/re-entry without mixing chats or carrying a pending confirmation.

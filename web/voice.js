@@ -26,6 +26,12 @@ class VoiceController {
     this.inlineChunks = [];
     this.inlineShouldSend = false;
     this.inlineGeneration = 0;
+    this.inlineSegments = new Map();
+    this.inlineText = "";
+    this.inlineMeter = null;
+    this.inlinePhase = "idle";
+    this.inlineSendStarted = false;
+    this.browserSegments = new Map();
     this.caps = {};
     this.mode = "browser";
     this.transcript = "";
@@ -85,10 +91,12 @@ class VoiceController {
         await this.transcribeFile(file, ++this.epoch);
       }
     });
+    // Asking by voice stays in the composer. The detailed dialog is now reserved
+    // for microphone tests, uploads, and read-aloud settings—not the normal flow.
     for (const id of ["voice-launch", "sidebar-voice"])
-      $(id).addEventListener("click", () => {
-        this.open();
-        this.start();
+      $(id)?.addEventListener("click", () => {
+        if (id === "sidebar-voice" && innerWidth <= 1060) toggleChat(true);
+        this.toggleInline();
       });
     $("voice-error").addEventListener("click", (e) => {
       if (e.target.closest("[data-voice-offline]")) {
@@ -221,6 +229,7 @@ class VoiceController {
     const epoch = ++this.epoch;
     this.mode = this.selectedMode();
     this.transcript = "";
+    this.browserSegments = new Map();
     $("voice-transcript").value = "";
     $("voice-timer").textContent = "00:00";
     this.setPhase(
@@ -466,9 +475,12 @@ class VoiceController {
     let hadError = false;
     rec.onresult = (event) => {
       if (epoch !== this.epoch || this.phase !== "listening") return;
-      let text = "";
-      for (let i = 0; i < event.results.length; i++) text += event.results[i][0].transcript + " ";
-      this.transcript = text.trim();
+      // Result indexes are stable for a recognition session. Replacing changed
+      // entries prevents Chrome/Safari revisions from being appended twice.
+      this.updateRecognitionSegments(event, this.browserSegments);
+      this.transcript = this.cleanVoiceTranscript(
+        [...this.browserSegments.values()].join(" "),
+      );
       $("voice-transcript").value = this.transcript;
       this.syncButtons();
       clearTimeout(this.pauseTimer);
@@ -685,17 +697,15 @@ class VoiceController {
       if (epoch !== this.epoch) return;
       const res = unpack(await timed(server.transcribe_clip({ path: uploaded.path }), 90000));
       if (epoch !== this.epoch) return;
-      this.transcript = res.text || "";
+      this.transcript = this.cleanVoiceTranscript(res.text);
       $("voice-transcript").value = this.transcript;
-      if ($("voice-auto")?.checked && this.transcript.trim()) {
-        await this.sendTranscript();
-      } else {
-        this.setPhase(
-          "review",
-          "Check what we heard.",
-          `${res.engine || "Offline English"} transcript. You can edit it or tap Send. Your microphone is off.`,
-        );
-      }
+      // Local fallback and uploaded audio must be reviewed: PocketSphinx is a
+      // privacy-preserving recovery engine, not a high-confidence live captioner.
+      this.setPhase(
+        "review",
+        "Check what we heard.",
+        `${res.engine || "Offline English"} transcript. You can edit it or tap Send. Your microphone is off.`,
+      );
     } catch (e) {
       if (epoch === this.epoch)
         this.error(
@@ -777,12 +787,160 @@ class VoiceController {
     this.clearError();
     this.syncButtons();
   }
-  toggleInline() {
-    if (this.inlineActive) {
-      this.stopInline(true);
-    } else {
-      this.startInline();
+  cleanVoiceTranscript(value) {
+    const words = String(value || "")
+      .normalize("NFKC")
+      .replace(/\s+/g, " ")
+      .trim()
+      .split(" ")
+      .filter(Boolean);
+    // Browser recognizers sometimes repeat a finalized phrase in the next result.
+    // Collapse only adjacent multi-word copies so emphatic single words stay intact.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const normalized = words.map((word) => word.toLowerCase().replace(/[^a-z0-9']/g, ""));
+      outer: for (let size = Math.min(12, Math.floor(words.length / 2)); size >= 2; size--) {
+        for (let start = 0; start + size * 2 <= words.length; start++) {
+          let same = true;
+          for (let offset = 0; offset < size; offset++) {
+            if (normalized[start + offset] !== normalized[start + size + offset]) {
+              same = false;
+              break;
+            }
+          }
+          if (same) {
+            words.splice(start + size, size);
+            changed = true;
+            break outer;
+          }
+        }
+      }
     }
+    return words.join(" ").replace(/\s+([,.;!?])/g, "$1").slice(0, 3000);
+  }
+  bestRecognitionCandidate(result) {
+    const candidates = Array.from(result || []);
+    const financeWords = new Set([
+      "checking",
+      "savings",
+      "balance",
+      "bill",
+      "bills",
+      "rent",
+      "debt",
+      "money",
+      "spend",
+      "spending",
+      "pay",
+      "paid",
+      "payment",
+      "budget",
+      "income",
+      "credit",
+      "card",
+      "groceries",
+      "electricity",
+      "phone",
+      "afford",
+      "loan",
+    ]);
+    return candidates
+      .map((candidate, index) => {
+        const transcript = String(candidate?.transcript || "").trim();
+        const terms = transcript.toLowerCase().match(/[a-z']+/g) || [];
+        const domainHits = terms.filter((term) => financeWords.has(term)).length;
+        const confidence = Number.isFinite(candidate?.confidence)
+          ? candidate.confidence
+          : index === 0
+            ? 0.7
+            : 0.45;
+        return { transcript, score: confidence + domainHits * 0.075 - index * 0.01 };
+      })
+      .filter((candidate) => candidate.transcript)
+      .sort((a, b) => b.score - a.score)[0]?.transcript;
+  }
+  updateRecognitionSegments(event, segments) {
+    if (!event?.results) return;
+    const first = Number.isInteger(event.resultIndex) ? event.resultIndex : 0;
+    for (let index = first; index < event.results.length; index++) {
+      const candidate = this.bestRecognitionCandidate(event.results[index]);
+      if (candidate) segments.set(index, candidate);
+    }
+    for (const index of [...segments.keys()]) {
+      if (index >= event.results.length) segments.delete(index);
+    }
+  }
+  recognitionText(segments) {
+    return this.cleanVoiceTranscript(
+      [...segments.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, value]) => value)
+        .join(" "),
+    );
+  }
+  setInlineStatus(phase = "idle", message = "") {
+    this.inlinePhase = phase;
+    const panel = $("inline-voice-status");
+    const detail = $("inline-voice-status-text");
+    if (panel) {
+      panel.hidden = !message;
+      panel.dataset.phase = phase;
+    }
+    if (detail) detail.textContent = message;
+    const listening = ["requesting", "listening"].includes(phase);
+    const mic = $("chat-mic");
+    if (mic) {
+      mic.classList.toggle("recording", listening);
+      mic.setAttribute("aria-label", listening ? "Stop and send voice question" : "Ask Solvra by voice");
+      mic.setAttribute("title", listening ? "Listening… tap to finish" : "Ask by voice");
+    }
+    const launch = $("voice-launch");
+    launch?.classList.toggle("recording", listening);
+    launch?.setAttribute("aria-pressed", String(listening));
+    if ($("voice-launch-label"))
+      $("voice-launch-label").textContent = listening ? "Listening… tap to finish" : "Ask by voice";
+  }
+  resetInlineUI() {
+    clearTimeout(this.inlinePauseTimer);
+    clearTimeout(this.inlineLimitTimer);
+    clearInterval(this.inlineMeter);
+    this.inlinePauseTimer = this.inlineLimitTimer = this.inlineMeter = null;
+    this.inlineActive = false;
+    this.inlineShouldSend = false;
+    this.inlineSendStarted = false;
+    this.inlineText = "";
+    this.inlineSegments = new Map();
+    this.setInlineStatus();
+    const input = $("chat-input");
+    if (input) input.placeholder = "Ask anything about your money…";
+  }
+  clearInlineReview(sentText = "") {
+    if (
+      this.inlinePhase === "review" &&
+      (!sentText || this.cleanVoiceTranscript(sentText) === this.inlineText)
+    )
+      this.resetInlineUI();
+  }
+  detachInlineRecognition() {
+    const rec = this.inlineRec;
+    this.inlineRec = null;
+    if (!rec) return;
+    rec.onresult = rec.onerror = rec.onend = null;
+    try {
+      rec.abort();
+    } catch {
+      /* The browser may have already ended this recognizer. */
+    }
+  }
+  toggleInline() {
+    if (this.inlinePhase === "transcribing") {
+      // Abort a pending local upload/transcript before another capture begins.
+      ++this.inlineGeneration;
+      this.stopInline(false);
+    } else if (this.inlineActive) this.stopInline(true);
+    else if (this.inlinePhase === "review") this.clearInlineReview();
+    else this.startInline();
   }
   async startInline() {
     if (!state.profile) return;
@@ -790,91 +948,151 @@ class VoiceController {
       toast("Wait for the current answer before asking another question.");
       return;
     }
+    this.stopInline(false);
     this.stopSpeaking();
     this.inlineActive = true;
     this.inlineShouldSend = false;
+    this.inlineSendStarted = false;
+    this.inlineText = "";
+    this.inlineSegments = new Map();
+    this.inlineChunks = [];
+    // Keep any typed draft intact until a complete voice question is ready.
     const generation = ++this.inlineGeneration;
+    const input = $("chat-input");
+    if (input) input.placeholder = "Listening… speak your question now";
+    this.setInlineStatus("requesting", "Listening… speak naturally. Tap the microphone when you’re done.");
     this.inlineLimitTimer = setTimeout(() => {
       if (this.inlineActive && generation === this.inlineGeneration) {
-        toast("Voice capture reached its 45-second limit; sending what was captured.");
+        toast("Voice capture reached 45 seconds; finishing what we heard.");
         this.stopInline(true);
       }
     }, 45000);
-    const btn = $("chat-mic");
-    const input = $("chat-input");
-    if (btn) {
-      btn.classList.add("recording");
-      btn.setAttribute("aria-label", "Stop listening and send question");
-      btn.setAttribute("title", "Listening… tap to send");
-    }
-    if (input) {
-      input.value = "";
-      input.placeholder = "Listening… speak your question now";
-    }
 
-    if (this.SR) {
-      try {
-        const rec = new this.SR();
-        this.inlineRec = rec;
-        rec.lang = $("voice-language")?.value || "en-US";
-        rec.interimResults = true;
-        rec.continuous = true;
-        rec.maxAlternatives = 1;
-        let finalStr = "";
-        rec.onresult = (event) => {
-          if (!this.inlineActive || generation !== this.inlineGeneration) return;
-          let interim = "";
-          for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) finalStr += event.results[i][0].transcript + " ";
-            else interim += event.results[i][0].transcript;
+    if (this.SR && this.selectedMode() === "browser") {
+      this.beginInlineBrowser(generation);
+      return;
+    }
+    this.beginInlineRecorder(generation);
+  }
+  beginInlineBrowser(generation) {
+    try {
+      const rec = new this.SR();
+      this.inlineRec = rec;
+      rec.lang = $("voice-language")?.value || "en-US";
+      // Final-only indexed segments are less jumpy and avoid the repeated-caption
+      // bug caused by appending interim and revised final hypotheses together.
+      rec.interimResults = false;
+      rec.continuous = true;
+      rec.maxAlternatives = 3;
+      rec.onresult = (event) => {
+        if (!this.inlineActive || generation !== this.inlineGeneration) return;
+        this.updateRecognitionSegments(event, this.inlineSegments);
+        const text = this.recognitionText(this.inlineSegments);
+        if (!text) return;
+        this.inlineText = text;
+        this.setInlineStatus("listening", "Heard you. Finishing your question…");
+        clearTimeout(this.inlinePauseTimer);
+        this.inlinePauseTimer = setTimeout(() => {
+          if (this.inlineActive && generation === this.inlineGeneration && this.inlineText) {
+            this.stopInline(true);
           }
-          const full = (finalStr + interim).trim();
-          if (full && input) {
-            input.value = full;
-            clearTimeout(this.inlinePauseTimer);
-            this.inlinePauseTimer = setTimeout(() => {
-              if (this.inlineActive && generation === this.inlineGeneration && input.value.trim())
-                this.stopInline(true);
-            }, 1400);
+        }, 1200);
+      };
+      rec.onerror = (event) => {
+        if (generation !== this.inlineGeneration || !this.inlineActive || event.error === "aborted") return;
+        if (["network", "service-not-allowed", "audio-capture", "language-not-supported"].includes(event.error)) {
+          this.detachInlineRecognition();
+          if (this.caps.offline) {
+            this.setInlineStatus("requesting", "Browser recognition is unavailable. Recording a local transcript…");
+            this.beginInlineRecorder(generation);
+          } else {
+            this.stopInline(false);
+            toast("Speech recognition is unavailable. Try typing your question.", true);
           }
-        };
-        rec.onerror = (event) => {
-          if (generation !== this.inlineGeneration || !this.inlineActive || event.error === "no-speech") return;
-          const message = event.error === "not-allowed"
+          return;
+        }
+        const message =
+          event.error === "not-allowed"
             ? "Microphone or speech recognition permission was denied. Check this site’s permissions."
             : "Speech recognition stopped. Try the microphone again or type your question.";
+        this.stopInline(false);
+        toast(message, true);
+      };
+      rec.onend = () => {
+        if (generation !== this.inlineGeneration || !this.inlineActive) return;
+        if (this.inlineText) this.stopInline(true);
+        else {
           this.stopInline(false);
-          toast(message, true);
-        };
-        rec.onend = () => {
-          if (generation !== this.inlineGeneration || !this.inlineActive) return;
-          if (input?.value.trim()) this.stopInline(true);
-          else {
-            this.stopInline(false);
-            toast("No speech was detected. Try again or type your question.", true);
-          }
-        };
-        rec.start();
-        return;
-      } catch {
-        this.inlineRec = null;
-        // Fall through to the local audio-recording/transcription path.
-      }
+          toast("No clear words were detected. Try again or type your question.", true);
+        }
+      };
+      rec.start();
+      this.setInlineStatus("listening", "Listening… speak naturally. Tap the microphone when you’re done.");
+    } catch {
+      this.inlineRec = null;
+      this.beginInlineRecorder(generation);
     }
-
+  }
+  beginInlineMeter(stream, generation) {
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!Context) return;
+    let context, analyser, samples;
+    try {
+      context = new Context();
+      const source = context.createMediaStreamSource(stream);
+      analyser = context.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      samples = new Float32Array(analyser.fftSize);
+    } catch {
+      context?.close?.().catch(() => {});
+      return;
+    }
+    let noise = 0.002;
+    let heard = false;
+    let lastVoice = performance.now();
+    const started = performance.now();
+    this.inlineMeter = setInterval(() => {
+      if (!this.inlineActive || generation !== this.inlineGeneration) return;
+      analyser.getFloatTimeDomainData(samples);
+      const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+      if (performance.now() - started < 400) noise = Math.min(0.009, noise * 0.9 + rms * 0.1);
+      if (rms > Math.max(0.006, noise * 2.4)) {
+        heard = true;
+        lastVoice = performance.now();
+      }
+      if (heard && performance.now() - started > 1400 && performance.now() - lastVoice > 1400)
+        this.stopInline(true);
+    }, 70);
+    // Closing the tracks is enough to release the source; close the lightweight
+    // meter context once capture has ended instead of retaining it in the session.
+    stream.getTracks()[0]?.addEventListener("ended", () => context.close().catch(() => {}), {
+      once: true,
+    });
+  }
+  async beginInlineRecorder(generation) {
     try {
       if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
         throw new Error("Microphone access requires a secure page and a supported browser.");
       if (!window.MediaRecorder) throw new Error("Audio recording is not supported by this browser.");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const device = $("voice-device")?.value;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(device ? { deviceId: { exact: device } } : {}),
+        },
+      });
       if (!this.inlineActive || generation !== this.inlineGeneration) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
       this.inlineStream = stream;
       this.inlineChunks = [];
-      const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"]
-        .find((type) => MediaRecorder.isTypeSupported(type));
+      const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"].find(
+        (type) => MediaRecorder.isTypeSupported(type),
+      );
       const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       this.inlineRecorder = recorder;
       recorder.ondataavailable = (event) => {
@@ -889,71 +1107,115 @@ class VoiceController {
       recorder.onstop = async () => {
         stream.getTracks().forEach((track) => track.stop());
         if (this.inlineStream === stream) this.inlineStream = null;
-        if (generation !== this.inlineGeneration || !this.inlineShouldSend) return;
+        if (this.inlineRecorder === recorder) this.inlineRecorder = null;
+        // A new capture can start before an old recorder dispatches its stop
+        // event. That stale event must release only its own stream, never reset
+        // the newer capture's controls or transcript.
+        if (generation !== this.inlineGeneration) return;
+        if (!this.inlineShouldSend) {
+          this.resetInlineUI();
+          return;
+        }
         if (!this.caps.offline) {
-          toast("Offline transcription is unavailable. Choose browser speech recognition or type your question.", true);
+          this.resetInlineUI();
+          toast("Offline transcription is unavailable. Choose browser recognition or type your question.", true);
           return;
         }
         try {
-          if (input) input.placeholder = "Transcribing your question…";
+          this.setInlineStatus("transcribing", "Checking your words…");
           const type = mime?.includes("mp4") ? "m4a" : mime?.includes("ogg") ? "ogg" : "webm";
-          const file = new File(this.inlineChunks, "inline-voice." + type, { type: mime || "audio/webm" });
+          const file = new File(this.inlineChunks, "inline-voice." + type, {
+            type: mime || "audio/webm",
+          });
           if (!file.size || file.size > 15 * 1024 * 1024)
             throw new Error("The recording is empty or too large. Please try a shorter question.");
           const uploaded = await timed(upload(file), 45000);
           if (generation !== this.inlineGeneration || !state.profile) return;
           const res = unpack(await timed(server.transcribe_clip({ path: uploaded.path }), 90000));
           if (generation !== this.inlineGeneration || !state.profile) return;
-          const text = (res.text || "").trim();
+          const text = this.cleanVoiceTranscript(res.text);
           if (!text) throw new Error("No words were detected. Try again or type your question.");
-          if (input) input.value = text;
-          await sendMessage(text);
-        } catch (e) {
-          if (generation === this.inlineGeneration) toast(e.message || "Could not transcribe audio.", true);
-        } finally {
-          if (generation === this.inlineGeneration && input)
-            input.placeholder = "Ask anything about your money…";
+          // Offline transcripts can be much less accurate than browser recognition.
+          // Keep this recovery path in the composer, never in a new voice popup.
+          this.offerInlineReview(text, res.engine || "Offline transcript");
+        } catch (error) {
+          if (generation === this.inlineGeneration) {
+            this.resetInlineUI();
+            toast(error.message || "Could not transcribe audio.", true);
+          }
         }
       };
       recorder.start(200);
-    } catch (e) {
-      this.stopInline(false);
-      toast("Microphone could not start: " + (e.message || "permission denied"), true);
+      this.beginInlineMeter(stream, generation);
+      this.setInlineStatus("listening", "Listening locally… pause when you’re done.");
+    } catch (error) {
+      if (generation === this.inlineGeneration) {
+        this.stopInline(false);
+        toast("Microphone could not start: " + (error.message || "permission denied"), true);
+      }
     }
+  }
+  offerInlineReview(text, engine) {
+    const input = $("chat-input");
+    this.inlineActive = false;
+    this.inlineShouldSend = false;
+    this.inlineText = this.cleanVoiceTranscript(text);
+    if (input) {
+      input.value = this.inlineText;
+      input.placeholder = "Review the transcript, then send";
+      input.focus({ preventScroll: true });
+    }
+    this.setInlineStatus(
+      "review",
+      `${engine} needs a quick check. Review the draft, then tap Send.`,
+    );
+  }
+  async sendInlineText(text, generation) {
+    text = this.cleanVoiceTranscript(text);
+    if (
+      !text ||
+      this.inlineSendStarted ||
+      generation !== this.inlineGeneration ||
+      state.busy ||
+      !state.profile
+    )
+      return;
+    this.inlineSendStarted = true;
+    this.inlineActive = false;
+    this.inlineShouldSend = false;
+    this.setInlineStatus("thinking", "Sending your question…");
+    await sendMessage(text);
+    if (generation === this.inlineGeneration) this.resetInlineUI();
   }
   stopInline(send = true) {
     clearTimeout(this.inlinePauseTimer);
     clearTimeout(this.inlineLimitTimer);
-    this.inlineLimitTimer = null;
+    clearInterval(this.inlineMeter);
+    this.inlinePauseTimer = this.inlineLimitTimer = this.inlineMeter = null;
+    const text = this.inlineText;
     this.inlineActive = false;
     this.inlineShouldSend = send;
-    const btn = $("chat-mic");
-    const input = $("chat-input");
-    if (btn) {
-      btn.classList.remove("recording");
-      btn.setAttribute("aria-label", "Speak your question");
-      btn.setAttribute("title", "Speak your question (instant voice)");
-    }
-    if (input) input.placeholder = "Ask anything about your money…";
-
-    if (this.inlineRec) {
-      const rec = this.inlineRec;
-      this.inlineRec = null;
-      try { rec.stop(); } catch {}
-    }
-    if (this.inlineRecorder && this.inlineRecorder.state !== "inactive") {
-      try { this.inlineRecorder.stop(); } catch {}
-      this.inlineRecorder = null;
+    this.detachInlineRecognition();
+    const recorder = this.inlineRecorder;
+    if (recorder && recorder.state !== "inactive") {
+      this.setInlineStatus(send ? "transcribing" : "idle", send ? "Checking your words…" : "");
+      try {
+        recorder.stop();
+      } catch {
+        /* Its stop callback will either finish transcription or release the stream. */
+      }
       return;
     }
     if (this.inlineStream) {
       this.inlineStream.getTracks().forEach((track) => track.stop());
       this.inlineStream = null;
     }
-    if (send && input) {
-      const text = input.value.trim();
-      if (text) sendMessage(text);
+    if (send && text) {
+      if ($("voice-auto")?.checked === false) this.offerInlineReview(text, "Transcript");
+      else void this.sendInlineText(text, this.inlineGeneration);
+      return;
     }
+    this.resetInlineUI();
   }
   stopAll() {
     this.stopInline(false);

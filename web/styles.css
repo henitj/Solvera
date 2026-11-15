@@ -624,7 +624,23 @@ body { margin: 0; }
   margin-bottom: 9px; text-align: left; font-weight: 500; font-size: 11px;
 }
 #solvra .voice-launch:hover { background: #d6eee6; }
+#solvra .voice-launch.recording { color: #a53a2a; background: var(--warning-soft); border-color: var(--warning-line); }
+#solvra .voice-launch.recording .voice-launch-pill { color: #a53a2a; border-color: var(--warning-line); background: var(--surface); }
 #solvra .send-button svg,#solvra .voice-launch svg { width: 15px; height: 15px; }
+#solvra .inline-voice-status {
+  display: flex; align-items: center; gap: 7px; padding: 8px 10px; margin: -2px 0 8px;
+  background: var(--primary-soft); border: 1px solid var(--primary-line); border-radius: 7px;
+  color: var(--primary-hover); font-size: 10px; line-height: 1.45;
+}
+#solvra .inline-voice-status svg { width: 13px; height: 13px; flex: 0 0 auto; }
+#solvra .inline-voice-status[data-phase="listening"] svg,
+#solvra .inline-voice-status[data-phase="requesting"] svg { animation: inline-voice-pulse 1.2s infinite ease-in-out; }
+#solvra .inline-voice-status[data-phase="transcribing"] { background: var(--violet-soft); border-color: var(--violet-line); color: var(--violet); }
+#solvra .inline-voice-status[data-phase="review"] { background: var(--warning-soft); border-color: var(--warning-line); color: var(--warning); }
+@keyframes inline-voice-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.16); opacity: .62; }
+}
 #solvra .view-toolbar .button:last-child,#solvra .voice-launch>[data-icon]:last-child { margin-left: auto; }
 #solvra .voice-launch-pill {
   letter-spacing: .8px; border: 1px solid var(--control-line); border-radius: 3px; padding: 1px 4px;
@@ -1274,6 +1290,10 @@ body { margin: 0; }
 #solvra .login-person-preview > svg { color: var(--primary); margin-top: 3px; }
 #solvra .login-person-preview b { display: block; font-size: 14px; color: var(--ink); }
 #solvra .login-person-preview small { display: block; margin: 2px 0 9px; font-size: 10px; }
+#solvra .login-person-status { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 999px; background: var(--primary-soft); border: 1px solid var(--primary-line); color: var(--primary-hover); font-size: 9px; font-weight: 700; line-height: 1.25; }
+#solvra .login-person-status[data-situation^="Watch"] { background: var(--warning-soft); border-color: var(--warning-line); color: var(--warning); }
+#solvra .login-person-status[data-situation^="High"],#solvra .login-person-status[data-situation^="Critical"] { background: var(--negative-soft); border-color: var(--negative-line); color: var(--negative); }
+#solvra .login-person-preview .login-person-detail { margin-top: 8px; font-size: 10px; line-height: 1.6; color: var(--text); }
 #solvra .login-person-preview .login-person-goal { font-size: 11px; color: var(--primary-hover); margin-top: 7px; font-weight: 600; }
 #solvra .login-person-avatar { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 10px; background: var(--primary-soft); color: var(--primary-hover); display: grid; place-items: center; font-weight: 700; font-size: 12px; }
 #solvra #demo-login-button { width: 100%; min-height: 48px; justify-content: center; font-size: 13px; }

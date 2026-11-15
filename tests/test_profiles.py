@@ -138,6 +138,27 @@ def test_each_fixture_is_reproducible_realistic_and_ledger_backed(who):
     assert a.profile == b.profile
 
 
+def test_public_picker_communicates_the_varied_fictional_starting_points():
+    public = {person["id"]: person for person in p.catalog()}
+    assert {key: public[key]["situation"].split(" · ")[0] for key in public} == {
+        "maya": "Stable",
+        "jordan": "Watch",
+        "aisha": "High",
+        "marcus": "Critical",
+    }
+    assert all(person["situation_detail"] for person in public.values())
+    # The picker can make each story legible without leaking balances or ledgers
+    # before the user has selected a fictional person.
+    assert not {
+        "balance",
+        "checking",
+        "savings",
+        "transactions",
+        "debt",
+        "trouble",
+    }.intersection(public["maya"])
+
+
 def test_people_have_genuinely_different_accounts_not_renamed_copies():
     accounts = [p.DemoAccount(key) for key in p.PEOPLE]
     assert len({a.balance("Checking") for a in accounts}) == 4
