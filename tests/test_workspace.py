@@ -500,6 +500,7 @@ def test_optional_whisper_is_local_only_and_bad_models_fall_back(monkeypatch, tm
     (tmp_path / "model.bin").write_bytes(b"test fixture, not actual model weights")
     (tmp_path / "config.json").write_text("{}")
     calls = []
+    transcriptions = []
 
     class FakeModel:
         def __init__(self, path, **options):
@@ -508,6 +509,7 @@ def test_optional_whisper_is_local_only_and_bad_models_fall_back(monkeypatch, tm
                 raise OSError("Invalid local model")
 
         def transcribe(self, audio, **options):
+            transcriptions.append(options)
             return iter([types.SimpleNamespace(text="What is my balance?")]), None
 
     module = types.ModuleType("faster_whisper")
@@ -521,6 +523,9 @@ def test_optional_whisper_is_local_only_and_bad_models_fall_back(monkeypatch, tm
     text = voice.transcribe(str(Path(__file__).parent / "fixtures" / "goforward.flac"))
     assert calls[0]["local_files_only"] is True
     assert text == ("go forward ten meters" if fail_model else "What is my balance?")
+    if not fail_model:
+        assert transcriptions[0]["condition_on_previous_text"] is False
+        assert transcriptions[0]["initial_prompt"] == voice._WHISPER_INITIAL_PROMPT
     assert voice.capabilities()["engine"] == ("Offline English" if fail_model else "Local Whisper")
     assert voice.capabilities()["review_required"] is True
 
@@ -578,6 +583,7 @@ def test_expanded_conversational_questions_are_answered(account):
 
 def test_trim_silence_strips_leading_trailing_energy():
     import numpy as np
+
     import solvra_voice as voice
 
     silence = np.zeros(16000, dtype=np.int16)

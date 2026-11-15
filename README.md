@@ -57,7 +57,7 @@ November is a **partial month**. Month-to-date comparisons use the same days of 
 ## Voice: one tap, one clean turn
 
 1. Tap **Ask by voice** in the assistant composer (or the microphone icon). Capture stays in that composer—there is no separate speaking popup.
-2. In supported Chrome, Edge, and Safari versions, browser recognition waits for final words instead of placing partial captions in the text box. Indexed recognition segments replace revised results rather than append them, and adjacent repeated phrases are removed before the question is sent.
+2. In supported Chrome, Edge, and Safari versions, browser recognition waits for final words instead of placing partial captions in the text box. Indexed recognition segments replace revised results rather than append them, and adjacent repeated phrases are removed before the question is sent. Where the browser supports speech phrase bias, Solvra also supplies product, account, bill, and selected-person terms to improve recognition of finance-specific words; other browsers use their normal recognizer unchanged.
 3. Pause or tap the microphone to finish. Solvra waits for a completed result, processes it once, sends **one** cleaned question, and returns the answer in the same conversation—no manual Send step.
 4. If browser recognition fails, the app records a local fallback, processes its finished transcript, and sends it in the same flow—never in a new popup. You can also select offline mode directly or upload a recording.
 5. Use **Test microphone only** and the device selector in Voice settings to distinguish a blocked input, a silent microphone, and a speech-service failure. The mic test does not upload audio.
@@ -88,7 +88,7 @@ pip install faster-whisper
 SOLVRA_WHISPER_MODEL=/absolute/path/to/whisper-base.en python solvra_app.py
 ```
 
-The app uses `local_files_only=True` and never attempts a hidden model download. If no valid local model is configured, PocketSphinx remains available. The base install is fully functional without Whisper.
+The app uses `local_files_only=True` and never attempts a hidden model download. Its careful final-pass settings include a finance-specific prompt for account and bill vocabulary. If no valid local model is configured, PocketSphinx remains available. The base install is fully functional without Whisper.
 
 ### Voice privacy and troubleshooting
 

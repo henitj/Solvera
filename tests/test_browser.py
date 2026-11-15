@@ -18,10 +18,16 @@ pytestmark = pytest.mark.skipif(
 RECOGNIZER = """
 window.__recognizers = [];
 window.SpeechRecognition = class {
-  constructor() { window.__recognizers.push(this); }
+  constructor() { this.phrases = []; window.__recognizers.push(this); }
   start() { this.started = true; window.__recognizer = this; this.onstart?.(); }
   stop() { this.onend?.(); }
   abort() { this.aborted = true; this.onend?.(); }
+};
+"""
+
+RECOGNITION_PHRASES = """
+window.SpeechRecognitionPhrase = class {
+  constructor(phrase, boost) { this.phrase = phrase; this.boost = boost; }
 };
 """
 
@@ -215,6 +221,44 @@ def test_inline_voice_sends_one_clean_turn_without_opening_a_dialog(page):
     assert "$26,999.44" in page.locator(".chat-message.assistant").inner_text()
     assert not page.locator("#chat-pending").is_visible()
     assert page.locator("#inline-voice-status").is_hidden()
+
+
+def test_browser_recognition_biases_finance_terms_without_overriding_confident_words(page):
+    page.add_init_script(RECOGNIZER + RECOGNITION_PHRASES)
+    open_workspace(page, profile="marcus")
+    page.locator("#voice-launch").click()
+    page.wait_for_function("window.__recognizer?.started")
+
+    settings = page.evaluate(
+        """() => ({
+        language: window.__recognizer.lang,
+        interim: window.__recognizer.interimResults,
+        alternatives: window.__recognizer.maxAlternatives,
+        phrases: window.__recognizer.phrases.map(({phrase, boost}) => ({phrase, boost})),
+        })"""
+    )
+    assert settings["language"] == "en-US"
+    assert settings["interim"] is False
+    assert settings["alternatives"] == 3
+    assert {"Solvra", "checking balance", "Marcus Bennett"}.issubset(
+        {item["phrase"] for item in settings["phrases"]}
+    )
+    assert next(item["boost"] for item in settings["phrases"] if item["phrase"] == "Solvra") == 7
+
+    # A much lower-confidence alternative that merely has more finance keywords
+    # must not replace the recognizer's more certain wording.
+    page.evaluate(
+        """() => {
+        const results = [[
+          {transcript:'What is my balance?', confidence:0.94},
+          {transcript:'What is my savings checking account balance?', confidence:0.75},
+        ]];
+        results[0].isFinal = true;
+        window.__recognizer.onresult({resultIndex:0, results});
+        }"""
+    )
+    assert page.evaluate("voice.inlineText") == "What is my balance?"
+    page.evaluate("voice.stopAll()")
 
 
 def test_dialog_voice_sends_a_final_browser_question_automatically(page):

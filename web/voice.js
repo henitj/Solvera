@@ -1,5 +1,7 @@
 // Explicit microphone state machine. Capture, transcription, and chat are independent.
 // Every asynchronous callback is generation-checked so a stopped mic never restarts itself.
+const FINAL_SPEECH_PAUSE_MS = 1800;
+
 class VoiceController {
   constructor() {
     this.epoch = 0;
@@ -467,11 +469,7 @@ class VoiceController {
       return;
     }
     this.recognition = rec;
-    rec.lang = $("voice-language").value;
-    // A completed voice question must never be sent from an interim caption.
-    rec.interimResults = false;
-    rec.continuous = true;
-    rec.maxAlternatives = 1;
+    this.configureRecognizer(rec);
     let hadError = false;
     rec.onresult = (event) => {
       if (epoch !== this.epoch || this.phase !== "listening") return;
@@ -487,7 +485,7 @@ class VoiceController {
       this.pauseTimer = setTimeout(() => {
         if (epoch === this.epoch && this.phase === "listening" && this.transcript.trim())
           this.finishCapture();
-      }, 1800);
+      }, FINAL_SPEECH_PAUSE_MS);
     };
     rec.onerror = (event) => {
       if (epoch !== this.epoch) return;
@@ -785,6 +783,64 @@ class VoiceController {
     this.clearError();
     this.syncButtons();
   }
+  recognitionTerms() {
+    const profileName = String(state.profile?.name || "").trim();
+    return [
+      "Solvra",
+      "checking account",
+      "checking balance",
+      "savings account",
+      "savings balance",
+      "credit card",
+      "auto loan",
+      "student loan",
+      "debt payment",
+      "payment plan",
+      "upcoming bill",
+      "overdue bill",
+      "rent",
+      "utilities",
+      "electricity bill",
+      "phone bill",
+      "grocery spending",
+      "emergency fund",
+      "cash flow",
+      "interest rate",
+      "paycheck",
+      "income",
+      "budget",
+      "financial trouble",
+      "Maya Chen",
+      "Jordan Reyes",
+      "Aisha Patel",
+      "Marcus Bennett",
+      profileName,
+    ].filter(Boolean);
+  }
+  configureRecognizer(rec) {
+    rec.lang = $("voice-language")?.value || "en-US";
+    // A completed voice question must never be sent from an interim caption.
+    rec.interimResults = false;
+    rec.continuous = true;
+    // The browser's first alternative is normally preferred. A few alternatives
+    // let a close finance-specific match win only when recognition confidence is
+    // comparable, instead of replacing spoken words with a low-confidence guess.
+    rec.maxAlternatives = 3;
+    const Phrase = window.SpeechRecognitionPhrase || window.webkitSpeechRecognitionPhrase;
+    if (!Phrase || !("phrases" in rec)) return;
+    try {
+      // Chromium's optional phrase-bias API improves recognition of product,
+      // account, and bill terms without changing audio routing or requiring a
+      // third-party speech service. Browsers that do not implement it use their
+      // normal recognizer unchanged.
+      rec.phrases = [...new Set(this.recognitionTerms())].map(
+        (term) => new Phrase(term, term === "Solvra" ? 7 : 5),
+      );
+    } catch {
+      // Phrase bias is experimental; an unsupported implementation must not
+      // prevent ordinary browser recognition from starting.
+    }
+  }
   cleanVoiceTranscript(value) {
     const words = String(value || "")
       .normalize("NFKC")
@@ -818,7 +874,6 @@ class VoiceController {
     return words.join(" ").replace(/\s+([,.;!?])/g, "$1").slice(0, 3000);
   }
   bestRecognitionCandidate(result) {
-    const candidates = Array.from(result || []);
     const financeWords = new Set([
       "checking",
       "savings",
@@ -826,6 +881,7 @@ class VoiceController {
       "bill",
       "bills",
       "rent",
+      "utilities",
       "debt",
       "money",
       "spend",
@@ -842,20 +898,40 @@ class VoiceController {
       "phone",
       "afford",
       "loan",
+      "cash",
+      "flow",
+      "interest",
+      "paycheck",
+      "overdue",
+      "emergency",
+      "trouble",
     ]);
-    return candidates
+    const candidates = Array.from(result || [])
       .map((candidate, index) => {
         const transcript = String(candidate?.transcript || "").trim();
         const terms = transcript.toLowerCase().match(/[a-z']+/g) || [];
         const domainHits = terms.filter((term) => financeWords.has(term)).length;
         const confidence = Number.isFinite(candidate?.confidence)
-          ? candidate.confidence
+          ? Math.max(0, Math.min(1, candidate.confidence))
           : index === 0
             ? 0.7
             : 0.45;
-        return { transcript, score: confidence + domainHits * 0.075 - index * 0.01 };
+        return { transcript, index, confidence, domainHits };
       })
-      .filter((candidate) => candidate.transcript)
+      .filter((candidate) => candidate.transcript);
+    const leadConfidence = Math.max(...candidates.map((candidate) => candidate.confidence));
+    return candidates
+      .map((candidate) => {
+        // Prefer the recognizer's highest-confidence wording. Finance language
+        // breaks ties only for genuinely close alternatives, so a vague
+        // low-confidence "balance" guess cannot overwrite what was spoken.
+        const closeToLead = leadConfidence - candidate.confidence <= 0.09;
+        const financeBoost = closeToLead ? Math.min(candidate.domainHits, 3) * 0.03 : 0;
+        return {
+          ...candidate,
+          score: candidate.confidence + financeBoost - candidate.index * 0.001,
+        };
+      })
       .sort((a, b) => b.score - a.score)[0]?.transcript;
   }
   updateRecognitionSegments(event, segments, finalOnly = false) {
@@ -969,12 +1045,7 @@ class VoiceController {
     try {
       const rec = new this.SR();
       this.inlineRec = rec;
-      rec.lang = $("voice-language")?.value || "en-US";
-      // Final-only indexed segments are less jumpy and avoid the repeated-caption
-      // bug caused by appending interim and revised final hypotheses together.
-      rec.interimResults = false;
-      rec.continuous = true;
-      rec.maxAlternatives = 3;
+      this.configureRecognizer(rec);
       rec.onresult = (event) => {
         if (!this.inlineActive || generation !== this.inlineGeneration) return;
         // Ignore an unexpected interim result even if a browser disregards the
@@ -989,7 +1060,7 @@ class VoiceController {
           if (this.inlineActive && generation === this.inlineGeneration && this.inlineText) {
             this.stopInline(true);
           }
-        }, 1200);
+        }, FINAL_SPEECH_PAUSE_MS);
       };
       rec.onerror = (event) => {
         if (generation !== this.inlineGeneration || !this.inlineActive || event.error === "aborted") return;
