@@ -1662,6 +1662,27 @@ def answer_financial_question(
             ),
             "your previous question",
         )
+        previous_low = previous.lower()
+        if "why" in previous_low and "sav" in previous_low:
+            return answer_financial_question(previous, account, None)
+        has_balance_intent = any(term in previous_low for term in ("balance", "how much money", "how much cash", "available funds")) or (
+            any(term in previous_low for term in ("checking", "savings"))
+            and any(term in previous_low for term in ("how much", "what is", "what's", "do i have", "money in"))
+        )
+        if has_balance_intent:
+            checking, savings = account.balance("Checking"), account.balance("Savings")
+            if "savings" in previous_low and "checking" not in previous_low:
+                return (f"Your savings balance is ${savings:,.2f}. It is separate from checking, which has ${checking:,.2f}.", None)
+            if "checking" in previous_low and "savings" not in previous_low:
+                return (f"Your checking balance is ${checking:,.2f}. It is separate from savings, which has ${savings:,.2f}.", None)
+            return (f"Together, checking (${checking:,.2f}) and savings (${savings:,.2f}) total ${checking + savings:,.2f}.", None)
+        if any(term in previous_low for term in ("debt", "owe", "loan")):
+            debts = account.debts()
+            return (f"Your recorded debt totals ${sum(debts.values()):,.2f}: " + _join_words([f"{name} ${amount:,.2f}" for name, amount in debts.items()]) + ".", None)
+        if any(term in previous_low for term in ("due", "bill", "upcoming")) and not any(term in previous_low for term in ("pay first", "payment plan", "priorit")):
+            return ("The bill dates and amounts I listed come from the account's open bills and recorded due dates. Provider balances or changes not entered here may differ; check the provider for current terms.", None)
+        if not any(term in previous_low for term in ("pay first", "payment plan", "priorit", "what should i pay", "what to pay")):
+            return ("I need a little more context to explain that accurately. Ask 'why' after a bill-priority recommendation, or repeat the finance question you want explained.", None)
         s = scenario_from_account(account)
         result = optimize(s)
         paid_ids = {p["bill_id"] for p in result.payments if p["amount"] > 0.005}
@@ -1811,15 +1832,17 @@ def answer_financial_question(
                 f"Should I record a ${amt:,.2f} payment toward {b.name}? Confirm by saying yes, or say no to cancel.",
                 pending,
             )
+    if re.search(r"\b(checking|savings)\b", low) and any(
+        term in low for term in ("how much", "balance", "have", "money in", "cash in")
+    ):
+        account_name = "Checking" if "checking" in low else "Savings"
+        return (f"Your {account_name.lower()} balance is ${account.balance(account_name):,.2f}.", None)
     if any(
         w in low
         for w in [
-            "how much money",
-            "balance",
-            "checking",
-            "savings",
-            "how much cash",
-            "how much do i have",
+            "how much money", "balance", "checking", "savings", "how much cash",
+            "how much do i have", "available funds", "available money", "cash on hand",
+            "account total", "total cash",
         ]
     ) and not ("why" in low and "saving" in low):
         checking = account.balance("Checking")
@@ -1985,7 +2008,16 @@ def answer_financial_question(
             None,
         )
     if any(w in low for w in ["spend", "spent", "expenses", "grocery", "groceries"]):
-        start, end = _last_month_bounds()
+        # Respect an explicit reporting window; otherwise use the previous full calendar month.
+        if any(term in low for term in ("this month", "month to date", "so far this month")):
+            start, end = AS_OF.replace(day=1), AS_OF
+            period_label = f"from {start:%B} 1 through {end:%B} {end.day}"
+        elif any(term in low for term in ("last 30 days", "past 30 days")):
+            start, end = AS_OF - dt.timedelta(days=29), AS_OF
+            period_label = f"in the last 30 days (through {end:%B} {end.day})"
+        else:
+            start, end = _last_month_bounds()
+            period_label = f"in {start:%B}"
         tx = account.transactions
         mask = (
             (tx.date.dt.date >= start)
@@ -2004,7 +2036,7 @@ def answer_financial_question(
         )
         detail = _join_words([f"{k} (${v:,.0f})" for k, v in cats.items()])
         return (
-            f"In {start:%B} you spent ${total:,.2f}."
+            f"You spent ${total:,.2f} {period_label}."
             + (f" The biggest categories were {detail}." if detail else ""),
             None,
         )
@@ -2079,9 +2111,8 @@ def answer_financial_question(
         )
     return (
         (
-            "Sorry, I'm not sure about that one. You can ask me things like: how much money do I have, "
-            "what bills are due this week, what should I pay first, how much did I spend last month, "
-            "or how much debt do I have."
+            "I'm not sure about that one. I can only help with personal-finance questions, and I don't have enough account information to answer it reliably. "
+            "Try asking about checking or savings balances, bills and due dates, spending for a time period, debt, income, a payment plan, or a financial what-if."
         ),
         None,
     )
@@ -2207,6 +2238,10 @@ def assistant_turn(
     # Drop a leading wake phrase such as "Hey Solvra," so it doesn't confuse intent matching.
     q = re.sub(r"^(?:(?:hey|hi|okay|ok)\s+)?solvra[\s,.!?]*", "", q, flags=re.IGNORECASE).strip() or q
     low = q.lower().strip(" .!?")
+    # Resolve short account follow-ups against the immediately preceding topic.
+    if last_question and re.fullmatch(r"(?:and\s+|what about\s+)?(checking|savings)(?: account| balance)?", low):
+        q = f"how much is in {low.split()[-1]}"
+        low = q.lower()
     changed = False
     end = False
     new_pending = None
@@ -2305,7 +2340,7 @@ body, gradio-app, .gradio-container, .main, .wrap.app {
   background: #eef3f5 !important;
 }
 .gradio-container {
-  max-width: 1200px !important;
+  max-width: 100% !important;
   width: 100% !important;
   margin: 0 auto !important;
   padding: clamp(10px, 2.2vw, 18px) clamp(8px, 2vw, 20px) 28px !important;
@@ -2811,7 +2846,10 @@ async function handleUtterance(text) {
     };
   }
   S.busy = false;
-  if (!/^(yes|yeah|yep|no|nope|ok|okay|sure|cancel)\b/i.test(text)) S.last = text;
+  if (!/^(yes|yeah|yep|no|nope|ok|okay|sure|cancel)\b/i.test(text)) {
+    if (S.last && /^(and|what about)\s+/i.test(text)) S.last = S.last + ' ' + text;
+    else S.last = text;
+  }
   S.pending = res.pending || null;
   showConfirm();
   addMsg('bot', res.reply || '');
@@ -2927,6 +2965,59 @@ def live_turn(payload: Any) -> dict[str, Any]:
     return assistant_turn(
         str(data.get("text") or ""), pending, str(data.get("last") or ""), DEMO
     )
+
+
+def transaction_table(account: AccountStore = DEMO) -> pd.DataFrame:
+    """Return a clean, editable transaction view."""
+    cols = ["transaction_id", "date", "merchant", "amount", "category", "transaction_type", "description", "account"]
+    return account.transactions.reindex(columns=cols).copy()
+
+
+def save_transaction_table(data: Any) -> tuple[pd.DataFrame, str, str]:
+    """Persist edits from the grid while preserving ledger safety and schema."""
+    try:
+        edited = pd.DataFrame(data).copy()
+        current = DEMO.transactions.copy()
+        required = ["transaction_id", "date", "merchant", "amount", "category", "transaction_type", "description", "account"]
+        if any(c not in edited.columns for c in required):
+            raise ValueError("The table columns are incomplete; refresh and try again.")
+        edited["amount"] = pd.to_numeric(edited["amount"], errors="raise").round(2)
+        if not np.isfinite(edited["amount"].to_numpy(dtype=float)).all():
+            raise ValueError("Amounts must be finite numbers.")
+        edited["date"] = pd.to_datetime(edited["date"], errors="raise")
+        if edited[required[2:]].isna().any().any():
+            raise ValueError("Merchant, category, transaction type, description, and account are required.")
+        known_accounts = set(current["account"].dropna().astype(str)) | set(DEMO.records["opening"].keys())
+        if not set(edited["account"].astype(str)).issubset(known_accounts):
+            raise ValueError("Choose a recognized account from the ledger.")
+        if edited["transaction_id"].duplicated().any() or set(edited.transaction_id) != set(current.transaction_id):
+            raise ValueError("Transaction IDs cannot be added or removed in the editor. Use Add transaction for new entries.")
+        edited = edited.set_index("transaction_id")
+        current = current.set_index("transaction_id")
+        for txid, row in edited.iterrows():
+            current.loc[txid, required[1:]] = row[required[1:]].values
+        current = current.reset_index()
+        for account_name, opening_balance in DEMO.records["opening"].items():
+            ending_balance = float(opening_balance) + float(
+                current.loc[current.account == account_name, "amount"].sum()
+            )
+            if ending_balance < -0.01:
+                raise ValueError(f"These edits would make {account_name.lower()} negative.")
+        DEMO.records["transactions"] = current.sort_values("date").reset_index(drop=True)
+        return transaction_table(), "Changes saved.", account_panel_html(DEMO)
+    except Exception as exc:
+        return transaction_table(), f"Could not save changes: {exc}", account_panel_html(DEMO)
+
+
+def add_manual_transaction(amount: float, category: str, merchant: str, description: str, tx_type: str):
+    try:
+        amount = float(amount)
+        if not merchant or not category or not tx_type or amount == 0:
+            raise ValueError("Enter a non-zero amount, merchant, category, and type.")
+        DEMO.add_transaction(amount, category, merchant, description or "Manually entered", tx_type)
+        return transaction_table(), "Transaction added.", account_panel_html(DEMO)
+    except Exception as exc:
+        return transaction_table(), f"Could not add transaction: {exc}", account_panel_html(DEMO)
 
 
 def launch_app():

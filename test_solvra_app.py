@@ -155,6 +155,65 @@ def test_account_updates_require_confirmation_and_sync_the_ledger():
     assert store.records["income_history"].iloc[-1].amount == 200
 
 
+def test_editable_transaction_ledger_saves_valid_edits_and_adds_records():
+    original = app.DEMO.records["transactions"].copy(deep=True)
+    try:
+        edited = app.transaction_table()
+        edited.loc[0, "description"] = "Updated from table"
+        saved, message, _ = app.save_transaction_table(edited)
+        assert message == "Changes saved."
+        assert saved.loc[0, "description"] == "Updated from table"
+
+        before = len(saved)
+        added, message, _ = app.add_manual_transaction(12.34, "Other", "Smoke test", "", "Purchase")
+        assert message == "Transaction added."
+        assert len(added) == before + 1
+    finally:
+        app.DEMO.records["transactions"] = original
+
+
+def test_live_chat_followups_keep_context_and_explain_the_right_topic():
+    store = app.AccountStore(app.generate_demo_records())
+    first = app.assistant_turn("How much money do I have?", account=store)
+    assert "in total" in first["reply"]
+
+    why = app.assistant_turn("Why?", last_question="How much money do I have?", account=store)
+    assert "Together, checking" in why["reply"]
+    assert f"${store.balance('Checking') + store.balance('Savings'):,.2f}" in why["reply"]
+
+    followup = app.assistant_turn("And savings?", last_question="How much money do I have?", account=store)
+    assert f"${store.balance('Savings'):,.2f}" in followup["reply"]
+    assert "due soonest" not in why["reply"]
+
+    unrelated_why = app.assistant_turn("Why?", last_question="When is rent due?", account=store)
+    assert "listed come from" in unrelated_why["reply"]
+    assert "due soonest" not in unrelated_why["reply"]
+
+
+def test_live_chat_answers_varied_finance_questions_and_rejects_unrelated():
+    store = app.AccountStore(app.generate_demo_records())
+
+    checking, pending = app.answer_financial_question("How much is in my checking account?", store)
+    assert f"${store.balance('Checking'):,.2f}" in checking
+    assert pending is None
+
+    savings, pending = app.answer_financial_question("What is my savings balance?", store)
+    assert f"${store.balance('Savings'):,.2f}" in savings
+    assert pending is None
+
+    debt, pending = app.answer_financial_question("How much debt do I have?", store)
+    assert f"${sum(store.debts().values()):,.0f}" in debt
+    assert pending is None
+
+    bills, pending = app.answer_financial_question("What bills are due this week?", store)
+    assert "due in the next 7 days" in bills or "Nothing is due in the next 7 days" in bills
+    assert pending is None
+
+    unrelated, pending = app.answer_financial_question("Can you tell me a joke about penguins?", store)
+    assert "only help with personal-finance questions" in unrelated
+    assert pending is None
+
+
 def test_server_port_configuration_falls_back_or_honors_an_explicit_port(monkeypatch):
     monkeypatch.delenv("GRADIO_SERVER_PORT", raising=False)
     assert app.configured_server_port() is None
