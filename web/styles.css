@@ -1036,6 +1036,17 @@ body { margin: 0; }
 #solvra .answer-notice { font-size: 10px; line-height: 1.6; margin-top: 8px; color: var(--muted); }
 #solvra .ai-consent { display: flex; align-items: flex-start; gap: 9px; line-height: 1.8; margin-top: 18px; font-size: 12px; color: var(--text); }
 #solvra .ai-consent input { margin-top: 4px; }
+#solvra .guardrail-runtime-warning {
+  display: flex; align-items: flex-start; gap: 10px; padding: 13px 15px; border: 1px solid var(--warning-line);
+  border-radius: 10px; background: var(--warning-soft); color: var(--warning);
+}
+#solvra .guardrail-runtime-warning>span { display: grid; place-items: center; width: 21px; height: 21px; flex: 0 0 21px; border-radius: 50%; background: rgb(255 255 255 / .7); }
+#solvra .guardrail-runtime-warning svg { width: 13px; height: 13px; }
+#solvra .guardrail-runtime-warning b { color: var(--text); font-size: 11px; font-weight: 650; }
+#solvra .guardrail-runtime-warning p { margin-top: 3px; color: var(--text); font-size: 10px; line-height: 1.6; }
+#solvra .guardrail-runtime-warning ~ .guardrail-workbench .guardrail-form,
+#solvra .guardrail-runtime-warning ~ .guardrail-workbench .guardrail-presets,
+#solvra .guardrail-runtime-warning ~ .guardrail-history .text-button { opacity: .52; pointer-events: none; }
 #solvra .guardrail-hero {
   display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px;
   border: 1px solid #cdd8f0; border-radius: 12px; background: linear-gradient(120deg,#eef3ff,#f8faff 58%,#edf8f5);

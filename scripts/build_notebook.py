@@ -101,13 +101,28 @@ with zipfile.ZipFile(io.BytesIO(_bundle)) as archive:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(archive.read(name))
 sys.path.insert(0, str(_solvra_root))
-print("Workspace source and local assets are ready.")
+# A Colab runtime preserves imported modules when a notebook is updated in place.
+# Without clearing this small local-module set, a new frontend can call an old
+# workspace handler and report an unknown action. The next notebook import must
+# therefore load the just-extracted backend and assets as one matching version.
+for _solvra_module in (
+    "solvra_app",
+    "solvra_assistant",
+    "solvra_ai",
+    "solvra_insights",
+    "solvra_profiles",
+    "solvra_workspace",
+    "solvra_voice",
+    "solvra_speech",
+):
+    sys.modules.pop(_solvra_module, None)
+print("Workspace source and local assets are ready. After an update, run Open Solvra again and use its newly printed link.")
 """
     )
     cells = [
         cell(
             "markdown",
-            "# Solvra — your money, in focus\n\nA complete financial workspace: cash-flow charts, searchable transactions, an explainable bill planner, account-grounded chat, and voice with live captions and an offline fallback.\n\n**Four fictional households · snapshot November 14, 2026 · not financial advice.** No bank is connected and no money is moved.\n\nRun the four cells below in order. No paid API key is required. Offline recognition is bundled; natural neural read-aloud downloads about 90 MB of verified model assets on first use. This notebook embeds the exact Python and frontend sources from the repository; it does not fetch an older copy from `main`.\n",
+            "# Solvra — your money, in focus\n\nA complete financial workspace: cash-flow charts, searchable transactions, an explainable bill planner, account-grounded chat, and voice with live captions and an offline fallback.\n\n**Four fictional households · snapshot November 14, 2026 · not financial advice.** No bank is connected and no money is moved.\n\nRun the four cells below in order. No paid API key is required. Offline recognition is bundled; natural neural read-aloud downloads about 90 MB of verified model assets on first use. This notebook embeds the exact Python and frontend sources from the repository; it does not fetch an older copy from `main`. If you replace this notebook while a Colab runtime is still open, run **Load the workspace** and **Open Solvra** again, then use the newly printed link so the frontend and backend match.\n",
             "intro",
         ),
         cell(
