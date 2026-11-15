@@ -45,8 +45,7 @@ def test_synthetic_bill_terms_and_installment_ledger_are_consistent():
     assert required_terms.issubset(history.columns)
 
     electricity = history.loc[
-        history.bill_name.eq("Electricity")
-        & history.due_date.astype(str).str.startswith("2025-08")
+        history.bill_name.eq("Electricity") & history.due_date.astype(str).str.startswith("2025-08")
     ].iloc[0]
     assert electricity.status == "Paid late (installments)"
     assert electricity.amount_paid == pytest.approx(electricity.original_amount)
@@ -118,8 +117,7 @@ def test_optimizer_respects_cash_timing_minimum_and_all_or_nothing():
     assert card_paid_by_due == 0 or card_paid_by_due >= 49.98
     whole_bill_payments = [p for p in result.payments if p["bill_id"] == "whole"]
     assert not whole_bill_payments or (
-        len(whole_bill_payments) == 1
-        and whole_bill_payments[0]["amount"] == pytest.approx(200)
+        len(whole_bill_payments) == 1 and whole_bill_payments[0]["amount"] == pytest.approx(200)
     )
 
 
@@ -181,7 +179,9 @@ def test_live_chat_followups_keep_context_and_explain_the_right_topic():
     assert "Together, checking" in why["reply"]
     assert f"${store.balance('Checking') + store.balance('Savings'):,.2f}" in why["reply"]
 
-    followup = app.assistant_turn("And savings?", last_question="How much money do I have?", account=store)
+    followup = app.assistant_turn(
+        "And savings?", last_question="How much money do I have?", account=store
+    )
     assert f"${store.balance('Savings'):,.2f}" in followup["reply"]
     assert "due soonest" not in why["reply"]
 
@@ -209,7 +209,9 @@ def test_live_chat_answers_varied_finance_questions_and_rejects_unrelated():
     assert "due in the next 7 days" in bills or "Nothing is due in the next 7 days" in bills
     assert pending is None
 
-    unrelated, pending = app.answer_financial_question("Can you tell me a joke about penguins?", store)
+    unrelated, pending = app.answer_financial_question(
+        "Can you tell me a joke about penguins?", store
+    )
     assert "only help with personal-finance questions" in unrelated
     assert pending is None
 
@@ -233,17 +235,29 @@ def test_server_port_configuration_falls_back_or_honors_an_explicit_port(monkeyp
         app.configured_server_port()
 
 
-def test_gradio_interface_is_a_single_page_with_live_voice():
-    import gradio as gr
+def test_gradio_interface_has_the_financial_workspace_and_voice_transport():
 
     interface = app.launch_app()
     blocks = list(interface.blocks.values())
-    assert not any(isinstance(b, (gr.Tabs, gr.Tab)) for b in blocks)
-    live = next(b for b in blocks if getattr(b, "elem_id", None) == "sv-live-wrap")
-    assert {fn.__name__ for fn in live.server_fns} == {"live_turn", "transcribe_clip"}
-    assert "account_changed" in live.js_on_load
+    workspace = next(b for b in blocks if getattr(b, "elem_id", None) == "sv-workspace")
+    assert {fn.__name__ for fn in workspace.server_fns} == {
+        "live_turn",
+        "transcribe_clip",
+        "workspace_action",
+    }
+    assert "VoiceController" in workspace.js_on_load
+    assert 'data-view="transactions"' in workspace.value
+    assert "voice-transcript" in workspace.value
     reply = app.live_turn({"text": "How much money do I have?", "pending": None, "last": ""})
-    assert "checking" in reply["reply"] and reply["pending"] is None
+    assert reply["code"] == "login_required"
+    import solvra_workspace as workspace
+
+    login = workspace.workspace_action({"op": "login", "profile_id": "maya"})
+    try:
+        reply = app.live_turn({"session": login["session"], "text": "How much money do I have?"})
+        assert "checking" in reply["reply"] and reply["pending"] is None
+    finally:
+        workspace.workspace_action({"op": "logout", "session": login["session"]})
     options = app.launch_options()
     assert {"theme", "css", "js"} <= set(options)
     # Dark mode must not change any colour (it made labels invisible before).
@@ -293,7 +307,10 @@ def test_common_spoken_questions_get_direct_answers():
 
 def test_speech_text_reads_naturally():
     spoken = app.speech_text("**Rent** is $1,425.00, due 2026-12-01; gas is $58.00 & tax $19.99.")
-    assert spoken == "Rent is $1,425, due Dec 1; gas is $58 and tax $19.99."
+    assert spoken == (
+        "Rent is one thousand, four hundred and twenty-five dollars, due December first, "
+        "twenty twenty-six; gas is fifty-eight dollars and tax nineteen dollars and ninety-nine cents."
+    )
 
 
 def test_account_panel_and_transcription_guard():
