@@ -80,6 +80,28 @@ def decode_pcm(path: str) -> np.ndarray:
     return audio
 
 
+def trim_silence(audio: np.ndarray | bytes, threshold: float = 0.003, pad_ms: int = 250) -> np.ndarray | bytes:
+    """Trim leading and trailing silence to accelerate speech decoding and reduce noise."""
+    is_bytes = isinstance(audio, (bytes, bytearray))
+    arr = np.frombuffer(audio, dtype=np.int16) if is_bytes else audio
+    if len(arr) <= 320:
+        return audio
+    abs_audio = np.abs(arr.astype(np.float32) / 32768.0)
+    window_size = 320
+    stride = 160
+    energy = np.array([
+        np.mean(abs_audio[i : i + window_size])
+        for i in range(0, len(abs_audio) - window_size, stride)
+    ])
+    voiced = np.where(energy > threshold)[0]
+    if len(voiced) == 0:
+        return audio
+    start_frame = max(0, int(voiced[0] * stride - (pad_ms * 16)))
+    end_frame = min(len(arr), int((voiced[-1] * stride) + window_size + (pad_ms * 16)))
+    trimmed = arr[start_frame:end_frame]
+    return trimmed.tobytes() if is_bytes else trimmed
+
+
 def transcribe(path: str) -> str:
     global _WHISPER, _WHISPER_FAILED
     file = Path(path)
@@ -87,7 +109,7 @@ def transcribe(path: str) -> str:
         raise ValueError("Choose an audio recording (WAV, WebM, MP3, M4A, OGG, or FLAC).")
     if not 0 < file.stat().st_size <= MAX_BYTES:
         raise ValueError("Choose a non-empty recording smaller than 15 MB.")
-    audio = decode_pcm(str(file))
+    audio = trim_silence(decode_pcm(str(file)))
     config = capabilities()
     if config["engine"] == "Local Whisper":
         try:

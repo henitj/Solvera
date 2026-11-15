@@ -275,8 +275,7 @@
             <div class="composer-area">
               <button id="voice-launch" class="voice-launch">
                 <span data-icon="wave"></span><span>Talk to Solvra</span
-                ><span class="voice-launch-pill">VOICE</span
-                ><span data-icon="arrow-up-right"></span>
+                ><span class="voice-launch-pill">VOICE</span>
               </button>
               <form id="chat-form" class="chat-form">
                 <label class="sr-only" for="chat-input">Ask Solvra about your money</label
@@ -287,14 +286,27 @@
                   placeholder="Ask anything about your money…"
                 ></textarea>
                 <div class="composer-bottom">
-                  <button
-                    type="button"
-                    id="attach-audio"
-                    class="icon-button"
-                    aria-label="Upload a voice recording"
-                  >
-                    <span data-icon="paperclip"></span></button
-                  ><small>Enter to send · Shift + Enter for a new line</small
+                  <div class="composer-left-actions">
+                    <button
+                      type="button"
+                      id="chat-mic"
+                      class="icon-button mic-button"
+                      aria-label="Speak your question"
+                      title="Speak your question (instant voice)"
+                    >
+                      <span data-icon="mic"></span>
+                    </button>
+                    <button
+                      type="button"
+                      id="attach-audio"
+                      class="icon-button"
+                      aria-label="Upload an audio file"
+                      title="Upload an audio file"
+                    >
+                      <span data-icon="paperclip"></span>
+                    </button>
+                  </div>
+                  <small>Enter to send · Shift + Enter for a new line</small
                   ><button
                     type="submit"
                     id="chat-send"
@@ -433,8 +445,8 @@
       </div>
       <label class="toggle-row"
         ><span
-          >Auto-send after a pause<small>Browser mode only. Off lets you review first.</small></span
-        ><input type="checkbox" id="voice-auto" /></label
+          >Auto-send after a pause<small>Sends your question when you stop speaking.</small></span
+        ><input type="checkbox" id="voice-auto" checked /></label
       ><button id="test-mic" class="text-button">
         <span data-icon="activity"></span>Test microphone only
       </button>
@@ -442,17 +454,15 @@
     <div class="voice-privacy">
       <span data-icon="shield"></span>
       <p>
-        Browser recognition may use your browser provider’s speech service. Offline recordings are
-        uploaded to this app for transcription. Neither mode records account changes without
+        Browser recognition provides live speech transcription. Offline recordings are
+        processed on this app's server. Neither mode records account changes without
         confirmation.
       </p>
     </div>
     <div class="voice-bottom">
       <button id="voice-upload" class="text-button">
-        <span data-icon="upload"></span>Upload audio instead</button
-      ><a id="voice-new-tab" target="_blank" rel="noopener noreferrer"
-        >Open in a new tab<span data-icon="arrow-up-right"></span
-      ></a>
+        <span data-icon="upload"></span>Upload audio file
+      </button>
     </div>
   </dialog>
   <input id="audio-upload" type="file" accept="audio/*,.webm,.m4a,.mp4" hidden />
