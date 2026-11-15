@@ -24,6 +24,29 @@ from solvra_insights import (
     totals,
 )
 
+def _one_edit_apart(a: str, b: str) -> bool:
+    """Return true for finance terms with at most one character typo."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    i = j = errors = 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            i += 1
+            j += 1
+            continue
+        errors += 1
+        if errors > 1:
+            return False
+        if len(a) > len(b):
+            i += 1
+        elif len(b) > len(a):
+            j += 1
+        else:
+            i += 1
+            j += 1
+    return errors + int(i < len(a) or j < len(b)) <= 1
+
+
 CATEGORY_ALIASES = {
     "grocer": ["Groceries"],
     "grocery": ["Groceries"],
@@ -1458,7 +1481,14 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
         "maya", "jordan", "aisha", "marcus"
     }
     words = set(re.findall(r"[a-z0-9]+", low))
-    has_finance = bool(words & FINANCIAL_KEYWORDS) or any(phrase in low for phrase in ("how am i", "where does my", "can i get", "what do i have", "how are my", "what are my", "help me"))
+    # Accept one-character typos in established finance terms, but don't fuzzy
+    # match short tokens (which creates many accidental topic hits).
+    has_typo_tolerant_finance = any(
+        len(word) >= 5
+        and any(_one_edit_apart(word, term) for term in FINANCIAL_KEYWORDS if len(term) >= 5)
+        for word in words
+    )
+    has_finance = bool(words & FINANCIAL_KEYWORDS) or has_typo_tolerant_finance or any(phrase in low for phrase in ("how am i", "where does my", "can i get", "what do i have", "how are my", "what are my", "help me"))
 
     if not has_finance:
         return result(

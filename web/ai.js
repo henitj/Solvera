@@ -206,7 +206,17 @@ class FinanceAI {
         this.error = this.describeError(error);
         toast(this.error, true);
       }
-      return await api("ai_abort", { ticket: job.ticket }, context);
+      // Best-effort server finalization: a transient network failure here must
+      // not erase the already-computed local answer and leave the chat blank.
+      try {
+        return await api("ai_abort", { ticket: job.ticket }, context);
+      } catch (abortError) {
+        if (context.epoch !== state.epoch || abortError.silent) throw abortError;
+        const fallback = { ...response };
+        delete fallback.ai_job;
+        fallback.notice = "Grok was unavailable; showing the local finance engine answer. If it did not appear in your saved conversation, ask again.";
+        return fallback;
+      }
     } finally {
       if (context.epoch === state.epoch) {
         this.phase = "";

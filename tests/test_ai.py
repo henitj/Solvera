@@ -328,6 +328,8 @@ def test_guardrail_monitor_fails_closed_when_a_custom_prompt_has_no_finance_topi
         "Can I afford a $200 purchase this month?",
         "How do I build an emergency fund while paying down debt?",
         "Explain ETF diversification and retirement investing.",
+        "How much finaces am I in?",
+        "How much debbt am I in?",
     ],
 )
 def test_guardrail_monitor_allows_recognizable_read_only_finance_prompts(prompt):

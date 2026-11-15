@@ -142,10 +142,48 @@ def blocked_prompt(text: str) -> bool:
 def recognizable_finance_topic(text: str) -> bool:
     """Return whether a custom monitor prompt has a local finance-topic signal.
 
-    This is intentionally a conservative checker for the no-model Security
-    Monitor. It is not the real assistant's semantic scope classifier.
+    Permit a single-character typo in finance vocabulary (for example, ``debt``
+    is intentionally exact while ``finaces`` matches ``finances``). Keep the
+    correction restricted to known domain terms, rather than fuzzy-matching
+    arbitrary words into a finance request.
     """
-    return bool(LOCAL_FINANCE_TOPIC.search(text))
+    if LOCAL_FINANCE_TOPIC.search(text):
+        return True
+    words = re.findall(r"[a-z]+", text.casefold())
+    terms = (
+        "account", "afford", "balance", "bank", "bill", "budget", "cash",
+        "checking", "credit", "cost", "debt", "deduct", "dollar", "expense",
+        "finance", "financial", "income", "insurance", "interest", "invest",
+        "ledger", "loan", "money", "mortgage", "payment", "paycheck",
+        "portfolio", "purchase", "retirement", "salary", "savings", "spend", "tax",
+    )
+    return any(
+        len(word) >= 5 and any(_one_edit_apart(word, term) for term in terms)
+        for word in words
+    )
+
+
+def _one_edit_apart(a: str, b: str) -> bool:
+    """Whether two words differ by at most one insertion, deletion or substitution."""
+    if abs(len(a) - len(b)) > 1:
+        return False
+    i = j = errors = 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            i += 1
+            j += 1
+            continue
+        errors += 1
+        if errors > 1:
+            return False
+        if len(a) > len(b):
+            i += 1
+        elif len(b) > len(a):
+            j += 1
+        else:
+            i += 1
+            j += 1
+    return errors + int(i < len(a) or j < len(b)) <= 1
 
 
 def question_guardrail(text: str, profile: dict | None = None) -> str | None:
