@@ -21,6 +21,10 @@ ALLOWED_SUFFIXES = {".webm", ".ogg", ".wav", ".mp3", ".mp4", ".m4a", ".flac", ".
 _MODEL_LOCK = threading.Lock()
 _WHISPER = None
 _WHISPER_FAILED = ""
+_WHISPER_INITIAL_PROMPT = (
+    "This is an English personal-finance question about checking, savings, bills, rent, "
+    "utilities, credit cards, loans, budgets, income, and payment plans."
+)
 
 
 def capabilities() -> dict:
@@ -132,6 +136,8 @@ def transcribe(path: str) -> str:
                     beam_size=5,
                     best_of=5,
                     temperature=0,
+                    condition_on_previous_text=False,
+                    initial_prompt=_WHISPER_INITIAL_PROMPT,
                     vad_filter=True,
                 )
                 text = " ".join(s.text.strip() for s in segments).strip()

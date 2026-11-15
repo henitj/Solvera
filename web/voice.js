@@ -1,5 +1,7 @@
 // Explicit microphone state machine. Capture, transcription, and chat are independent.
 // Every asynchronous callback is generation-checked so a stopped mic never restarts itself.
+const FINAL_SPEECH_PAUSE_MS = 1800;
+
 class VoiceController {
   constructor() {
     this.epoch = 0;
@@ -67,7 +69,7 @@ class VoiceController {
         "idle",
         "Ready when you are",
         this.selectedMode() === "offline"
-          ? "Offline English recording. Stop, review, then send."
+          ? "Offline English recording. Pause or stop when done; Solvra will process and send it."
           : "Browser speech recognition with live captions.",
       );
       $("voice-language").disabled = this.selectedMode() === "offline";
@@ -118,7 +120,6 @@ class VoiceController {
   configure(caps) {
     this.caps = caps || {};
     this.player.configure(this.caps.speech);
-    if ($("voice-auto")) $("voice-auto").checked = true;
     $("voice-engine").options[1].disabled = !this.caps.offline;
     if (!this.SR && !this.caps.offline)
       this.error(
@@ -290,7 +291,7 @@ class VoiceController {
           ? "Speak and watch the bars. Nothing from this test is uploaded."
           : this.mode === "browser"
             ? "Your words appear below. Pause or tap Stop when you’re done."
-            : "Speak clearly, then pause or tap Stop. You’ll review the transcript before sending.",
+            : "Speak clearly, then pause or tap Stop. Solvra will process and send one question.",
       );
       this.beginMeter(stream, ctx, epoch, testOnly);
       if (!testOnly && this.mode === "browser") this.beginBrowser(epoch);
@@ -463,21 +464,18 @@ class VoiceController {
     } catch {
       this.fallbackToOffline(
         epoch,
-        "Browser recognition could not start. Use offline recording, then review the result.",
+        "Browser recognition could not start. Use offline recording; Solvra will process and send the completed question.",
       );
       return;
     }
     this.recognition = rec;
-    rec.lang = $("voice-language").value;
-    rec.interimResults = true;
-    rec.continuous = true;
-    rec.maxAlternatives = 1;
+    this.configureRecognizer(rec);
     let hadError = false;
     rec.onresult = (event) => {
       if (epoch !== this.epoch || this.phase !== "listening") return;
       // Result indexes are stable for a recognition session. Replacing changed
       // entries prevents Chrome/Safari revisions from being appended twice.
-      this.updateRecognitionSegments(event, this.browserSegments);
+      this.updateRecognitionSegments(event, this.browserSegments, true);
       this.transcript = this.cleanVoiceTranscript(
         [...this.browserSegments.values()].join(" "),
       );
@@ -487,7 +485,7 @@ class VoiceController {
       this.pauseTimer = setTimeout(() => {
         if (epoch === this.epoch && this.phase === "listening" && this.transcript.trim())
           this.finishCapture();
-      }, 1800);
+      }, FINAL_SPEECH_PAUSE_MS);
     };
     rec.onerror = (event) => {
       if (epoch !== this.epoch) return;
@@ -558,7 +556,7 @@ class VoiceController {
     this.setPhase(
       "listening",
       "Recording offline.",
-      message + " Pause or tap Stop when done. Review is always required.",
+      message + " Pause or tap Stop when done. Solvra will process and send the completed question.",
     );
   }
   detachRecognition() {
@@ -608,7 +606,7 @@ class VoiceController {
     this.releaseResources();
     this.syncButtons();
   }
-  async finishCapture({ forceReview = false } = {}) {
+  async finishCapture() {
     if (this.phase === "requesting") {
       this.cancelCapture();
       this.setPhase(
@@ -658,16 +656,16 @@ class VoiceController {
       this.transcript = text;
       this.setPhase(
         "review",
-        "Here’s what we heard.",
-        "Review or edit your question, then send. Your microphone is off.",
+        "Question ready.",
+        "Sending your completed voice question. Your microphone is off.",
       );
-      if ($("voice-auto").checked && !forceReview) this.sendTranscript();
+      await this.sendTranscript();
       return;
     }
     if (chunks.length && this.caps.offline) {
       const type = mime.includes("mp4") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
       const file = new File(chunks, "solvra-voice." + type, { type: mime });
-      await this.transcribeFile(file, epoch);
+      await this.transcribeFile(file, epoch, { sendWhenReady: true });
       return;
     }
     this.error(
@@ -675,7 +673,7 @@ class VoiceController {
       true,
     );
   }
-  async transcribeFile(file, epoch) {
+  async transcribeFile(file, epoch, { sendWhenReady = false } = {}) {
     if (file.size > 15 * 1024 * 1024) {
       this.error("Choose an audio recording smaller than 15 MB and shorter than 45 seconds.");
       return;
@@ -699,13 +697,15 @@ class VoiceController {
       if (epoch !== this.epoch) return;
       this.transcript = this.cleanVoiceTranscript(res.text);
       $("voice-transcript").value = this.transcript;
-      // Local fallback and uploaded audio must be reviewed: PocketSphinx is a
-      // privacy-preserving recovery engine, not a high-confidence live captioner.
+      if (!this.transcript) throw new Error("No words were detected. Try again or type your question.");
       this.setPhase(
         "review",
-        "Check what we heard.",
-        `${res.engine || "Offline English"} transcript. You can edit it or tap Send. Your microphone is off.`,
+        sendWhenReady ? "Question ready." : "Check what we heard.",
+        sendWhenReady
+          ? `${res.engine || "Offline English"} finished processing. Sending your voice question now.`
+          : `${res.engine || "Offline English"} transcript. You can edit it or tap Send. Your microphone is off.`,
       );
+      if (sendWhenReady) await this.sendTranscript();
     } catch (e) {
       if (epoch === this.epoch)
         this.error(
@@ -714,8 +714,7 @@ class VoiceController {
     }
   }
   async sendTranscript() {
-    if (["listening", "testing", "requesting"].includes(this.phase))
-      await this.finishCapture({ forceReview: true });
+    if (["listening", "testing", "requesting"].includes(this.phase)) await this.finishCapture();
     const text = $("voice-transcript").value.trim();
     if (!text || ["transcribing", "thinking"].includes(this.phase) || state.busy) return;
     this.awaitingReply = true;
@@ -746,27 +745,24 @@ class VoiceController {
     }
     answer.textContent = text;
     answer.hidden = false;
-    let played = false;
     if ($("voice-read").checked) {
       this.setPhase(
         "speaking",
         "Here’s what the numbers say.",
         "Tap Interrupt & speak to ask a follow-up.",
       );
-      played = await this.speak({
+      await this.speak({
         ...response,
         id: response.message_id,
         content: text,
       });
     }
     if (epoch !== this.epoch || !this.voiceSession || !$("voice-dialog").open) return;
-    if (played && $("voice-auto").checked && this.phase === "speaking") this.start();
-    else
-      this.setPhase(
-        "review",
-        "Ready for a follow-up?",
-        "Your microphone is off. Start listening again, or return to the conversation.",
-      );
+    this.setPhase(
+      "review",
+      "Ready for a follow-up?",
+      "Your microphone is off. Start listening again, or return to the conversation.",
+    );
   }
   stopSpeaking() {
     this.player.stop();
@@ -786,6 +782,64 @@ class VoiceController {
     $("audio-upload").value = "";
     this.clearError();
     this.syncButtons();
+  }
+  recognitionTerms() {
+    const profileName = String(state.profile?.name || "").trim();
+    return [
+      "Solvra",
+      "checking account",
+      "checking balance",
+      "savings account",
+      "savings balance",
+      "credit card",
+      "auto loan",
+      "student loan",
+      "debt payment",
+      "payment plan",
+      "upcoming bill",
+      "overdue bill",
+      "rent",
+      "utilities",
+      "electricity bill",
+      "phone bill",
+      "grocery spending",
+      "emergency fund",
+      "cash flow",
+      "interest rate",
+      "paycheck",
+      "income",
+      "budget",
+      "financial trouble",
+      "Maya Chen",
+      "Jordan Reyes",
+      "Aisha Patel",
+      "Marcus Bennett",
+      profileName,
+    ].filter(Boolean);
+  }
+  configureRecognizer(rec) {
+    rec.lang = $("voice-language")?.value || "en-US";
+    // A completed voice question must never be sent from an interim caption.
+    rec.interimResults = false;
+    rec.continuous = true;
+    // The browser's first alternative is normally preferred. A few alternatives
+    // let a close finance-specific match win only when recognition confidence is
+    // comparable, instead of replacing spoken words with a low-confidence guess.
+    rec.maxAlternatives = 3;
+    const Phrase = window.SpeechRecognitionPhrase || window.webkitSpeechRecognitionPhrase;
+    if (!Phrase || !("phrases" in rec)) return;
+    try {
+      // Chromium's optional phrase-bias API improves recognition of product,
+      // account, and bill terms without changing audio routing or requiring a
+      // third-party speech service. Browsers that do not implement it use their
+      // normal recognizer unchanged.
+      rec.phrases = [...new Set(this.recognitionTerms())].map(
+        (term) => new Phrase(term, term === "Solvra" ? 7 : 5),
+      );
+    } catch {
+      // Phrase bias is experimental; an unsupported implementation must not
+      // prevent ordinary browser recognition from starting.
+    }
   }
   cleanVoiceTranscript(value) {
     const words = String(value || "")
@@ -820,7 +874,6 @@ class VoiceController {
     return words.join(" ").replace(/\s+([,.;!?])/g, "$1").slice(0, 3000);
   }
   bestRecognitionCandidate(result) {
-    const candidates = Array.from(result || []);
     const financeWords = new Set([
       "checking",
       "savings",
@@ -828,6 +881,7 @@ class VoiceController {
       "bill",
       "bills",
       "rent",
+      "utilities",
       "debt",
       "money",
       "spend",
@@ -844,26 +898,47 @@ class VoiceController {
       "phone",
       "afford",
       "loan",
+      "cash",
+      "flow",
+      "interest",
+      "paycheck",
+      "overdue",
+      "emergency",
+      "trouble",
     ]);
-    return candidates
+    const candidates = Array.from(result || [])
       .map((candidate, index) => {
         const transcript = String(candidate?.transcript || "").trim();
         const terms = transcript.toLowerCase().match(/[a-z']+/g) || [];
         const domainHits = terms.filter((term) => financeWords.has(term)).length;
         const confidence = Number.isFinite(candidate?.confidence)
-          ? candidate.confidence
+          ? Math.max(0, Math.min(1, candidate.confidence))
           : index === 0
             ? 0.7
             : 0.45;
-        return { transcript, score: confidence + domainHits * 0.075 - index * 0.01 };
+        return { transcript, index, confidence, domainHits };
       })
-      .filter((candidate) => candidate.transcript)
+      .filter((candidate) => candidate.transcript);
+    const leadConfidence = Math.max(...candidates.map((candidate) => candidate.confidence));
+    return candidates
+      .map((candidate) => {
+        // Prefer the recognizer's highest-confidence wording. Finance language
+        // breaks ties only for genuinely close alternatives, so a vague
+        // low-confidence "balance" guess cannot overwrite what was spoken.
+        const closeToLead = leadConfidence - candidate.confidence <= 0.09;
+        const financeBoost = closeToLead ? Math.min(candidate.domainHits, 3) * 0.03 : 0;
+        return {
+          ...candidate,
+          score: candidate.confidence + financeBoost - candidate.index * 0.001,
+        };
+      })
       .sort((a, b) => b.score - a.score)[0]?.transcript;
   }
-  updateRecognitionSegments(event, segments) {
+  updateRecognitionSegments(event, segments, finalOnly = false) {
     if (!event?.results) return;
     const first = Number.isInteger(event.resultIndex) ? event.resultIndex : 0;
     for (let index = first; index < event.results.length; index++) {
+      if (finalOnly && !event.results[index].isFinal) continue;
       const candidate = this.bestRecognitionCandidate(event.results[index]);
       if (candidate) segments.set(index, candidate);
     }
@@ -915,13 +990,6 @@ class VoiceController {
     const input = $("chat-input");
     if (input) input.placeholder = "Ask anything about your money…";
   }
-  clearInlineReview(sentText = "") {
-    if (
-      this.inlinePhase === "review" &&
-      (!sentText || this.cleanVoiceTranscript(sentText) === this.inlineText)
-    )
-      this.resetInlineUI();
-  }
   detachInlineRecognition() {
     const rec = this.inlineRec;
     this.inlineRec = null;
@@ -939,7 +1007,6 @@ class VoiceController {
       ++this.inlineGeneration;
       this.stopInline(false);
     } else if (this.inlineActive) this.stopInline(true);
-    else if (this.inlinePhase === "review") this.clearInlineReview();
     else this.startInline();
   }
   async startInline() {
@@ -978,15 +1045,12 @@ class VoiceController {
     try {
       const rec = new this.SR();
       this.inlineRec = rec;
-      rec.lang = $("voice-language")?.value || "en-US";
-      // Final-only indexed segments are less jumpy and avoid the repeated-caption
-      // bug caused by appending interim and revised final hypotheses together.
-      rec.interimResults = false;
-      rec.continuous = true;
-      rec.maxAlternatives = 3;
+      this.configureRecognizer(rec);
       rec.onresult = (event) => {
         if (!this.inlineActive || generation !== this.inlineGeneration) return;
-        this.updateRecognitionSegments(event, this.inlineSegments);
+        // Ignore an unexpected interim result even if a browser disregards the
+        // interimResults setting: only a completed utterance may be sent.
+        this.updateRecognitionSegments(event, this.inlineSegments, true);
         const text = this.recognitionText(this.inlineSegments);
         if (!text) return;
         this.inlineText = text;
@@ -996,7 +1060,7 @@ class VoiceController {
           if (this.inlineActive && generation === this.inlineGeneration && this.inlineText) {
             this.stopInline(true);
           }
-        }, 1200);
+        }, FINAL_SPEECH_PAUSE_MS);
       };
       rec.onerror = (event) => {
         if (generation !== this.inlineGeneration || !this.inlineActive || event.error === "aborted") return;
@@ -1135,9 +1199,9 @@ class VoiceController {
           if (generation !== this.inlineGeneration || !state.profile) return;
           const text = this.cleanVoiceTranscript(res.text);
           if (!text) throw new Error("No words were detected. Try again or type your question.");
-          // Offline transcripts can be much less accurate than browser recognition.
-          // Keep this recovery path in the composer, never in a new voice popup.
-          this.offerInlineReview(text, res.engine || "Offline transcript");
+          // A spoken question remains one flow even when recognition falls back
+          // locally: process the completed audio, then send exactly one turn.
+          await this.sendInlineText(text, generation);
         } catch (error) {
           if (generation === this.inlineGeneration) {
             this.resetInlineUI();
@@ -1154,21 +1218,6 @@ class VoiceController {
         toast("Microphone could not start: " + (error.message || "permission denied"), true);
       }
     }
-  }
-  offerInlineReview(text, engine) {
-    const input = $("chat-input");
-    this.inlineActive = false;
-    this.inlineShouldSend = false;
-    this.inlineText = this.cleanVoiceTranscript(text);
-    if (input) {
-      input.value = this.inlineText;
-      input.placeholder = "Review the transcript, then send";
-      input.focus({ preventScroll: true });
-    }
-    this.setInlineStatus(
-      "review",
-      `${engine} needs a quick check. Review the draft, then tap Send.`,
-    );
   }
   async sendInlineText(text, generation) {
     text = this.cleanVoiceTranscript(text);
@@ -1211,8 +1260,7 @@ class VoiceController {
       this.inlineStream = null;
     }
     if (send && text) {
-      if ($("voice-auto")?.checked === false) this.offerInlineReview(text, "Transcript");
-      else void this.sendInlineText(text, this.inlineGeneration);
+      void this.sendInlineText(text, this.inlineGeneration);
       return;
     }
     this.resetInlineUI();

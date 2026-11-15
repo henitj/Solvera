@@ -398,7 +398,7 @@
         <label
           >Recognition<select id="voice-engine">
             <option value="browser">Browser · recommended accuracy</option>
-            <option value="offline">Offline · transcript review</option>
+            <option value="offline">Offline · automatic processing</option>
           </select></label
         ><label
           >Microphone language<select id="voice-language">
@@ -446,11 +446,8 @@
           Checking read-aloud availability…
         </p>
       </div>
-      <label class="toggle-row"
-        ><span
-          >Send after a complete question<small>Waits for final recognition, then sends one clean question. Offline transcripts still ask you to review.</small></span
-        ><input type="checkbox" id="voice-auto" checked /></label
-      ><button id="test-mic" class="text-button">
+      <p class="voice-flow-note">Voice questions wait for a final result, then process and send automatically in one flow.</p>
+      <button id="test-mic" class="text-button">
         <span data-icon="activity"></span>Test microphone only
       </button>
     </details>
