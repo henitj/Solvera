@@ -20,9 +20,12 @@ class VoiceController {
     this.inlineActive = false;
     this.inlineRec = null;
     this.inlinePauseTimer = null;
+    this.inlineLimitTimer = null;
     this.inlineRecorder = null;
     this.inlineStream = null;
     this.inlineChunks = [];
+    this.inlineShouldSend = false;
+    this.inlineGeneration = 0;
     this.caps = {};
     this.mode = "browser";
     this.transcript = "";
@@ -789,6 +792,14 @@ class VoiceController {
     }
     this.stopSpeaking();
     this.inlineActive = true;
+    this.inlineShouldSend = false;
+    const generation = ++this.inlineGeneration;
+    this.inlineLimitTimer = setTimeout(() => {
+      if (this.inlineActive && generation === this.inlineGeneration) {
+        toast("Voice capture reached its 45-second limit; sending what was captured.");
+        this.stopInline(true);
+      }
+    }, 45000);
     const btn = $("chat-mic");
     const input = $("chat-input");
     if (btn) {
@@ -797,6 +808,7 @@ class VoiceController {
       btn.setAttribute("title", "Listening… tap to send");
     }
     if (input) {
+      input.value = "";
       input.placeholder = "Listening… speak your question now";
     }
 
@@ -809,9 +821,8 @@ class VoiceController {
         rec.continuous = true;
         rec.maxAlternatives = 1;
         let finalStr = "";
-
         rec.onresult = (event) => {
-          if (!this.inlineActive) return;
+          if (!this.inlineActive || generation !== this.inlineGeneration) return;
           let interim = "";
           for (let i = event.resultIndex; i < event.results.length; ++i) {
             if (event.results[i].isFinal) finalStr += event.results[i][0].transcript + " ";
@@ -822,85 +833,100 @@ class VoiceController {
             input.value = full;
             clearTimeout(this.inlinePauseTimer);
             this.inlinePauseTimer = setTimeout(() => {
-              if (this.inlineActive && input.value.trim()) {
+              if (this.inlineActive && generation === this.inlineGeneration && input.value.trim())
                 this.stopInline(true);
-              }
             }, 1400);
           }
         };
-
         rec.onerror = (event) => {
-          if (event.error === "no-speech") return;
-          if (input?.value.trim()) {
-            this.stopInline(true);
-          } else {
-            this.stopInline(false);
-            toast("Could not detect speech. Please check microphone settings.", true);
-          }
+          if (generation !== this.inlineGeneration || !this.inlineActive || event.error === "no-speech") return;
+          const message = event.error === "not-allowed"
+            ? "Microphone or speech recognition permission was denied. Check this site’s permissions."
+            : "Speech recognition stopped. Try the microphone again or type your question.";
+          this.stopInline(false);
+          toast(message, true);
         };
-
         rec.onend = () => {
-          if (this.inlineActive) {
-            if (input?.value.trim()) this.stopInline(true);
-            else this.stopInline(false);
+          if (generation !== this.inlineGeneration || !this.inlineActive) return;
+          if (input?.value.trim()) this.stopInline(true);
+          else {
+            this.stopInline(false);
+            toast("No speech was detected. Try again or type your question.", true);
           }
         };
-
         rec.start();
         return;
       } catch {
-        /* Fall back to media recorder if SpeechRecognition couldn't start */
+        this.inlineRec = null;
+        // Fall through to the local audio-recording/transcription path.
       }
     }
 
     try {
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia)
+        throw new Error("Microphone access requires a secure page and a supported browser.");
+      if (!window.MediaRecorder) throw new Error("Audio recording is not supported by this browser.");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!this.inlineActive || generation !== this.inlineGeneration) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       this.inlineStream = stream;
       this.inlineChunks = [];
-      const mime = [
-        "audio/webm;codecs=opus",
-        "audio/mp4",
-        "audio/ogg;codecs=opus",
-        "audio/webm",
-      ].find((t) => MediaRecorder.isTypeSupported(t));
+      const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus", "audio/webm"]
+        .find((type) => MediaRecorder.isTypeSupported(type));
       const recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       this.inlineRecorder = recorder;
-      recorder.ondataavailable = (e) => {
-        if (e.data?.size) this.inlineChunks.push(e.data);
+      recorder.ondataavailable = (event) => {
+        if (event.data?.size) this.inlineChunks.push(event.data);
+      };
+      recorder.onerror = () => {
+        if (generation === this.inlineGeneration) {
+          this.stopInline(false);
+          toast("Audio recording failed. Try again or type your question.", true);
+        }
       };
       recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        if (this.inlineChunks.length && this.caps.offline) {
-          if (input) input.placeholder = "Transcribing speech…";
-          try {
-            const type =
-              mime && mime.includes("mp4") ? "m4a" : mime && mime.includes("ogg") ? "ogg" : "webm";
-            const file = new File(this.inlineChunks, "inline-voice." + type, {
-              type: mime || "audio/webm",
-            });
-            const uploaded = await timed(upload(file), 30000);
-            const res = unpack(await timed(server.transcribe_clip({ path: uploaded.path }), 60000));
-            const text = (res.text || "").trim();
-            if (text) {
-              if (input) input.value = text;
-              await sendMessage(text);
-            }
-          } catch (e) {
-            toast(e.message || "Could not transcribe audio.", true);
-          } finally {
-            if (input) input.placeholder = "Ask anything about your money…";
-          }
+        stream.getTracks().forEach((track) => track.stop());
+        if (this.inlineStream === stream) this.inlineStream = null;
+        if (generation !== this.inlineGeneration || !this.inlineShouldSend) return;
+        if (!this.caps.offline) {
+          toast("Offline transcription is unavailable. Choose browser speech recognition or type your question.", true);
+          return;
+        }
+        try {
+          if (input) input.placeholder = "Transcribing your question…";
+          const type = mime?.includes("mp4") ? "m4a" : mime?.includes("ogg") ? "ogg" : "webm";
+          const file = new File(this.inlineChunks, "inline-voice." + type, { type: mime || "audio/webm" });
+          if (!file.size || file.size > 15 * 1024 * 1024)
+            throw new Error("The recording is empty or too large. Please try a shorter question.");
+          const uploaded = await timed(upload(file), 45000);
+          if (generation !== this.inlineGeneration || !state.profile) return;
+          const res = unpack(await timed(server.transcribe_clip({ path: uploaded.path }), 90000));
+          if (generation !== this.inlineGeneration || !state.profile) return;
+          const text = (res.text || "").trim();
+          if (!text) throw new Error("No words were detected. Try again or type your question.");
+          if (input) input.value = text;
+          await sendMessage(text);
+        } catch (e) {
+          if (generation === this.inlineGeneration) toast(e.message || "Could not transcribe audio.", true);
+        } finally {
+          if (generation === this.inlineGeneration && input)
+            input.placeholder = "Ask anything about your money…";
         }
       };
       recorder.start(200);
     } catch (e) {
       this.stopInline(false);
-      toast("Microphone access could not be started: " + (e.message || "permission denied"), true);
+      toast("Microphone could not start: " + (e.message || "permission denied"), true);
     }
   }
   stopInline(send = true) {
     clearTimeout(this.inlinePauseTimer);
+    clearTimeout(this.inlineLimitTimer);
+    this.inlineLimitTimer = null;
     this.inlineActive = false;
+    this.inlineShouldSend = send;
     const btn = $("chat-mic");
     const input = $("chat-input");
     if (btn) {
@@ -908,39 +934,30 @@ class VoiceController {
       btn.setAttribute("aria-label", "Speak your question");
       btn.setAttribute("title", "Speak your question (instant voice)");
     }
-    if (input) {
-      input.placeholder = "Ask anything about your money…";
-    }
+    if (input) input.placeholder = "Ask anything about your money…";
 
     if (this.inlineRec) {
       const rec = this.inlineRec;
       this.inlineRec = null;
-      try {
-        rec.stop();
-      } catch {}
+      try { rec.stop(); } catch {}
     }
-
     if (this.inlineRecorder && this.inlineRecorder.state !== "inactive") {
-      try {
-        this.inlineRecorder.stop();
-      } catch {}
+      try { this.inlineRecorder.stop(); } catch {}
       this.inlineRecorder = null;
       return;
     }
     if (this.inlineStream) {
-      this.inlineStream.getTracks().forEach((t) => t.stop());
+      this.inlineStream.getTracks().forEach((track) => track.stop());
       this.inlineStream = null;
     }
-
     if (send && input) {
       const text = input.value.trim();
-      if (text) {
-        sendMessage(text);
-      }
+      if (text) sendMessage(text);
     }
   }
   stopAll() {
     this.stopInline(false);
+    this.inlineGeneration++;
     this.cancelCapture();
     this.player.stop(true);
     this.voiceSession = false;
