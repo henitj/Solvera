@@ -74,4 +74,3 @@ Solvra combines decision-support, optimization, a supervised savings-category ex
   - [Harvard CS50's Introduction to AI with Python](https://cs50.harvard.edu/ai/) — referenced for framing constrained search/optimization (`scipy.optimize.milp` bill-payment scheduling) alongside rules-based and statistical reasoning.
   - [Hugging Face Courses](https://huggingface.co/learn) — referenced for prompt engineering, structured JSON LLM guardrails, and open-weight speech/audio model integration (`kokoro-onnx` and optional `faster-whisper`).
   - [Puter Grok API Tutorial](https://developer.puter.com/tutorials/free-unlimited-grok-api/) and [Puter User-Pays Usage Model Docs](https://docs.puter.com/user-pays-model/)
-  - Built and iterated with AI-assisted coding on [Arena.ai](https://arena.ai/)
