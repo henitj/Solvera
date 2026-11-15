@@ -8,8 +8,8 @@
         <span class="login-kicker">LESS GUESSWORK. MORE BREATHING ROOM.</span>
         <h2 id="login-story-title">Different lives.<br />Clearer next steps.</h2>
         <p>
-          A steady saver. A freelancer. A parent balancing essentials. A worker facing a cash
-          crunch. Explore four very different money stories.
+          One person is doing well. One has uneven income. One has bills that are tight.
+          One needs urgent help. Explore four genuinely different money stories.
         </p>
         <div class="login-features">
           <span><i data-icon="layers"></i>Distinct, prepopulated ledgers</span
@@ -131,9 +131,9 @@
       <div class="sidebar-note">
         <span class="note-symbol" data-icon="wave"></span
         ><b>Big questions.<br />Clearer answers.</b>
-        <p>Sometimes it helps to talk<br />your money through.</p>
-        <button id="sidebar-voice">
-          Try the voice assistant <span data-icon="arrow-up-right"></span>
+        <p>Ask a voice question<br />without leaving this page.</p>
+        <button id="sidebar-voice" aria-label="Ask Solvra by voice">
+          Ask by voice <span data-icon="arrow-up-right"></span>
         </button>
       </div>
       <button class="nav-item utility" id="about-button">
@@ -273,10 +273,13 @@
             </div>
             <div id="follow-up-prompts" class="follow-up-prompts"></div>
             <div class="composer-area">
-              <button id="voice-launch" class="voice-launch">
-                <span data-icon="wave"></span><span>Talk to Solvra</span
-                ><span class="voice-launch-pill">VOICE</span>
+              <button id="voice-launch" class="voice-launch" type="button" aria-label="Ask Solvra by voice" aria-pressed="false">
+                <span data-icon="wave"></span><span id="voice-launch-label">Ask by voice</span
+                ><span class="voice-launch-pill">ONE TAP</span>
               </button>
+              <div id="inline-voice-status" class="inline-voice-status" role="status" aria-live="polite" hidden>
+                <span data-icon="mic"></span><span id="inline-voice-status-text"></span>
+              </div>
               <form id="chat-form" class="chat-form">
                 <label class="sr-only" for="chat-input">Ask Solvra about your money</label
                 ><textarea
@@ -291,8 +294,8 @@
                       type="button"
                       id="chat-mic"
                       class="icon-button mic-button"
-                      aria-label="Speak your question"
-                      title="Speak your question (instant voice)"
+                      aria-label="Ask Solvra by voice"
+                      title="Ask by voice"
                     >
                       <span data-icon="mic"></span>
                     </button>
@@ -394,8 +397,8 @@
       <div class="voice-settings-grid">
         <label
           >Recognition<select id="voice-engine">
-            <option value="browser">Browser · live captions</option>
-            <option value="offline">Offline · record & review</option>
+            <option value="browser">Browser · recommended accuracy</option>
+            <option value="offline">Offline · transcript review</option>
           </select></label
         ><label
           >Microphone language<select id="voice-language">
@@ -445,7 +448,7 @@
       </div>
       <label class="toggle-row"
         ><span
-          >Auto-send after a pause<small>Sends your question when you stop speaking.</small></span
+          >Send after a complete question<small>Waits for final recognition, then sends one clean question. Offline transcripts still ask you to review.</small></span
         ><input type="checkbox" id="voice-auto" checked /></label
       ><button id="test-mic" class="text-button">
         <span data-icon="activity"></span>Test microphone only

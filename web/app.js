@@ -601,6 +601,9 @@ function assistantMessage(response) {
 async function sendMessage(text, retry = false) {
   text = String(text || "").trim();
   if (!text) return;
+  // Offline voice recovery leaves its reviewable transcript in this same composer.
+  // Sending it should clear only that inline state, never open another dialog.
+  voice?.clearInlineReview(text);
   if (state.busy) {
     toast("One moment—your draft will stay here.");
     return;
@@ -743,7 +746,7 @@ function paymentDialog(id) {
 function showHelp() {
   openDialog(
     "A clearer way to see your money.",
-    `<div class="dialog-copy"><p><b>Four fictional households. Four separate ledgers.</b><br>You’re viewing ${esc(state.profile?.name || "a demo person")}. Their overview, planner, insights, assistant and voice use the same account. Each person has different seeded income, spending, debt, savings and bills. Logout in Settings to choose someone else. Changes and chats stay separate in this tab for up to 8 hours while the server runs.</p><p><b>Answers with the working shown.</b><br>Connect Grok AI for broader finance-only guidance and follow-ups. AI sharing requires your consent and Puter sign-in. Without it, exact local calculations, bill planning and confirmations still work. Answers are labeled by engine; expand account sources to check their basis.</p><p><b>Voice, with a safety net.</b><br>Use Chrome, Edge, or Safari for live captions. Allow microphone access on a secure HTTPS page. If your browser’s speech service fails, switch to offline recording, then review the transcript. Open the app in a new tab if an embedding page blocks the microphone. Replies use local neural speech by default; choose a voice, preview it, or change the pace in voice settings.</p><p><b>Financial trouble, explained.</b><br>Pressure points combine overdue essentials, 14-day bills, 30-day headroom, completed-month deficits, emergency savings and required debt service. Higher points mean more pressure; priority 1 is most urgent. Inspect the thresholds and safety floors in Insights. Grok receives this exact assessment after consent, not other people’s finances.</p><p><b>You always have the final say.</b><br>No real bank is connected. Nothing is paid, scheduled, transferred, or canceled. Ledger changes require confirmation. All figures are estimates from demo data—not financial advice.</p></div><div class="dialog-actions"><button class="button primary" data-action="help-voice">Try voice ${icon("mic")}</button></div>`,
+    `<div class="dialog-copy"><p><b>Four fictional households. Four separate ledgers.</b><br>You’re viewing ${esc(state.profile?.name || "a demo person")}. Their overview, planner, insights, assistant and voice use the same account. Each person has different seeded income, spending, debt, savings and bills. Logout in Settings to choose someone else. Changes and chats stay separate in this tab for up to 8 hours while the server runs.</p><p><b>Answers with the working shown.</b><br>Connect Grok AI for broader finance-only guidance and follow-ups. AI sharing requires your consent and Puter sign-in. Without it, exact local calculations, bill planning and confirmations still work. Answers are labeled by engine; expand account sources to check their basis.</p><p><b>Voice, in one clean turn.</b><br>Ask by voice directly from the composer—no separate speaking popup. Chrome, Edge, and Safari wait for final recognition, remove repeated phrases, then send one question. If browser speech fails, local recording leaves a reviewable draft in the same composer. Open the app in a new tab if an embedding page blocks the microphone. Replies use local neural speech by default; choose a voice, preview it, or change the pace in voice settings.</p><p><b>Financial trouble, explained.</b><br>Pressure points combine overdue essentials, 14-day bills, 30-day headroom, completed-month deficits, emergency savings and required debt service. Higher points mean more pressure; priority 1 is most urgent. Inspect the thresholds and safety floors in Insights. Grok receives this exact assessment after consent, not other people’s finances.</p><p><b>You always have the final say.</b><br>No real bank is connected. Nothing is paid, scheduled, transferred, or canceled. Ledger changes require confirmation. All figures are estimates from demo data—not financial advice.</p></div><div class="dialog-actions"><button class="button primary" data-action="help-voice">Try voice ${icon("mic")}</button></div>`,
     "GOOD TO KNOW",
   );
 }
@@ -791,8 +794,8 @@ function loginControls(message = "") {
 function previewPerson() {
   const p = state.people.find((p) => p.id === $("demo-person").value);
   $("login-person-preview").innerHTML = p
-    ? `<span class="login-person-avatar">${esc(p.initials)}</span><div><b>${esc(p.name)}</b><small>${esc(p.role)} · ${esc(p.household)}</small><p>${esc(p.story)}</p><p class="login-person-goal">Goal: ${esc(p.goal)}</p></div>`
-    : `${icon("layers")}<p>Every person has a different income, transaction history, savings, debt and bill situation.</p>`;
+    ? `<span class="login-person-avatar">${esc(p.initials)}</span><div><b>${esc(p.name)}</b><small>${esc(p.role)} · ${esc(p.household)}</small><span class="login-person-status" data-situation="${esc(p.situation || "")}">${esc(p.situation || "Different financial picture")}</span><p>${esc(p.story)}</p><p class="login-person-detail">${esc(p.situation_detail || "Each fictional account has a distinct financial starting point.")}</p><p class="login-person-goal">Goal: ${esc(p.goal)}</p></div>`
+    : `${icon("layers")}<p>Choose a person to see whether their fictional starting point is stable, worth watching, tight, or urgent.</p>`;
   loginControls();
 }
 function updatePerson() {
@@ -851,7 +854,10 @@ function showLogin(res = {}, message = "Choose a fictional person to begin.") {
   $("demo-person").innerHTML =
     `<option value="">Choose a fictional person…</option>` +
     state.people
-      .map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.role)}</option>`)
+      .map(
+        (p) =>
+          `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.role)} · ${esc(p.situation || "Fictional profile")}</option>`,
+      )
       .join("");
   $("login-retry").hidden = !!state.people.length;
   updatePerson();
@@ -1092,9 +1098,14 @@ root.addEventListener("click", async (event) => {
     $("health-factors").hidden = !$("health-factors").hidden;
     b.setAttribute("aria-expanded", String(!$("health-factors").hidden));
   }
-  if (action === "help-voice" || action === "voice-settings") {
+  if (action === "help-voice") {
     $("app-dialog").close();
-    voice.open(action === "voice-settings");
+    if (innerWidth <= 1060) toggleChat(true);
+    voice.startInline();
+  }
+  if (action === "voice-settings") {
+    $("app-dialog").close();
+    voice.open(true);
   }
   if (action === "settings-plan") {
     $("app-dialog").close();

@@ -30,6 +30,8 @@ class Person:
     paycheck: float
     payday: int
     reserve: float
+    situation: str
+    situation_detail: str
 
     def public(self) -> dict:
         return {
@@ -43,6 +45,11 @@ class Person:
             "household": self.household,
             "checking_suffix": self.checking_suffix,
             "savings_suffix": self.savings_suffix,
+            # This is deliberately descriptive, not a calculated balance or a
+            # credit-like score. The full ledger-backed ranking arrives only
+            # after a fictional person is selected and authenticated.
+            "situation": self.situation,
+            "situation_detail": self.situation_detail,
             "fictional": True,
         }
 
@@ -62,6 +69,8 @@ PEOPLE = {
             2200,
             20,
             1000,
+            "Stable · doing well",
+            "A healthy cash cushion and no past-due essential bills.",
         ),
         Person(
             "jordan",
@@ -75,6 +84,8 @@ PEOPLE = {
             1950,
             24,
             1500,
+            "Watch · uneven income",
+            "No overdue essentials, but irregular invoices and debt make timing important.",
         ),
         Person(
             "aisha",
@@ -88,6 +99,8 @@ PEOPLE = {
             1710,
             15,
             500,
+            "High · bills are tight",
+            "An overdue utility bill needs attention, while core household bills remain tight.",
         ),
         Person(
             "marcus",
@@ -101,6 +114,8 @@ PEOPLE = {
             900,
             15,
             100,
+            "Critical · urgent action",
+            "Rent and essential services are overdue after reduced work shifts and a car repair.",
         ),
     )
 }

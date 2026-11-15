@@ -123,10 +123,15 @@ def transcribe(path: str) -> str:
                         compute_type="int8",
                         local_files_only=True,
                     )
+                # Favor a careful final transcript over low-latency partial text.
+                # This path is used only with an explicitly provisioned local model;
+                # it never downloads a model or sends the recording to a provider.
                 segments, _ = _WHISPER.transcribe(
                     audio.astype(np.float32) / 32768,
                     language="en",
-                    beam_size=3,
+                    beam_size=5,
+                    best_of=5,
+                    temperature=0,
                     vad_filter=True,
                 )
                 text = " ".join(s.text.strip() for s in segments).strip()
