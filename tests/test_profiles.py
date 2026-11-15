@@ -76,6 +76,9 @@ def test_logged_out_bootstrap_returns_only_public_demo_people(demo):
         "ai_context",
         "ai_finish",
         "ai_abort",
+        "guardrail_history",
+        "guardrail_check",
+        "clear_guardrail_history",
     ],
 )
 def test_no_financial_endpoint_can_auto_login_a_guest(demo, op):

@@ -170,6 +170,107 @@ def question_guardrail(text: str, profile: dict | None = None) -> str | None:
     return None
 
 
+def guardrail_decision(text: str, profile: dict | None = None) -> dict[str, str]:
+    """Classify a guardrail-test prompt without calling a model or touching the ledger.
+
+    This is intentionally conservative. It powers the visible demo monitor and is
+    not the authorization layer: session ownership and explicit confirmation still
+    protect the fictional ledger on every real workspace action.
+    """
+    prompt = " ".join(str(text or "").split())
+    lowered = prompt.lower()
+    if blocked_prompt(prompt):
+        return {
+            "decision": "block",
+            "category": "Prompt injection",
+            "reason": "Attempts to override instructions or expose protected prompts are not accepted.",
+        }
+    if re.search(
+        r"\b(?:select|insert|update|delete|drop|alter|union)\b.{0,80}"
+        r"\b(?:from|into|table|database|accounts?|users?)\b|\b(?:or\s+1\s*=\s*1|--|;\s*drop)\b",
+        prompt,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        return {
+            "decision": "block",
+            "category": "Injection attempt",
+            "reason": "Database-like input is treated as untrusted text and is never executed.",
+        }
+    if re.search(
+        r"\b(?:i(?:'m| am)|act as|pretend to be|you are now)\b.{0,60}"
+        r"\b(?:admin(?:istrator)?|developer|system|bank employee|support agent)\b"
+        r"|\b(?:elevate|grant)\b.{0,45}\b(?:role|privilege|access)\b",
+        prompt,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        return {
+            "decision": "block",
+            "category": "Role spoofing",
+            "reason": "A prompt cannot change identity, permissions, or the selected demo account.",
+        }
+    if re.search(
+        r"\b(?:virus|malware|ransomware|keylogger|phishing kit|exploit|payload|backdoor)\b",
+        prompt,
+        re.IGNORECASE,
+    ):
+        return {
+            "decision": "block",
+            "category": "Unsafe request",
+            "reason": "Malware, credential theft, and harmful software requests are outside this assistant's scope.",
+        }
+    account_request = re.search(
+        r"\b(?:balance|account|accounts|card|credit|debt|income|savings|transactions?|ledger|users?)\b",
+        prompt,
+        re.IGNORECASE,
+    )
+    named_other = False
+    if profile:
+        for key, person in PEOPLE.items():
+            if key != profile.get("id") and re.search(
+                rf"\b{re.escape(person.name)}\b|\b{re.escape(person.name.split()[0])}\b",
+                prompt,
+                re.IGNORECASE,
+            ):
+                named_other = True
+                break
+    generic_other = bool(
+        re.search(
+            r"\b(?:another|other|all(?:\s+(?:users?|accounts?))?|every(?:one|body)?(?:\s+(?:users?|accounts?))?|user[_ -]?\d+|account[_ -]?\d+|profile[_ -]?\d+)\b",
+            lowered,
+        )
+    )
+    if account_request and (named_other or generic_other):
+        return {
+            "decision": "block",
+            "category": "Cross-account access",
+            "reason": "Only the selected fictional account can be used; other profiles stay isolated.",
+        }
+    if re.search(
+        r"\b(?:bypass|skip|without)\b.{0,55}\b(?:confirm(?:ation)?|approval|review)\b"
+        r"|\b(?:transfer|withdraw|send)\b.{0,90}\b(?:money|funds|dollars?|balance|account)\b"
+        r"|\b(?:delete|erase|modify|change|edit)\b.{0,90}\b(?:ledger|transaction|balance|account|bill|payment)\b",
+        prompt,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        return {
+            "decision": "block",
+            "category": "Unapproved account change",
+            "reason": "Prompts cannot move money or alter the ledger; recorded demo changes require separate confirmation controls.",
+        }
+    refusal = question_guardrail(prompt, profile)
+    if refusal:
+        return {
+            "decision": "block",
+            "category": "Out-of-scope or unsafe",
+            "reason": refusal,
+        }
+    return {
+        "decision": "allow",
+        "category": "Finance-only guidance",
+        "reason": "Read-only finance guidance is allowed. No account action is executed from this prompt.",
+    }
+
+
 def guard_messages(question: str, prior: str) -> list[dict]:
     return [
         {"role": "system", "content": GUARD_PROMPT},

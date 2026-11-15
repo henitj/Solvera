@@ -95,11 +95,7 @@ class VoiceController {
     });
     // Asking by voice stays in the composer. The detailed dialog is now reserved
     // for microphone tests, uploads, and read-aloud settings—not the normal flow.
-    for (const id of ["voice-launch", "sidebar-voice"])
-      $(id)?.addEventListener("click", () => {
-        if (id === "sidebar-voice" && innerWidth <= 1060) toggleChat(true);
-        this.toggleInline();
-      });
+    $("voice-launch")?.addEventListener("click", () => this.toggleInline());
     $("voice-error").addEventListener("click", (e) => {
       if (e.target.closest("[data-voice-offline]")) {
         $("voice-engine").value = "offline";

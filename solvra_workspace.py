@@ -32,6 +32,7 @@ from solvra_voice import capabilities
 SESSION_TTL = 8 * 60 * 60
 MAX_SESSIONS = 64
 MAX_HISTORY = 80
+MAX_GUARDRAIL_HISTORY = 50
 _LOCK = threading.RLock()
 _SESSIONS: dict[str, Session] = {}
 
@@ -46,6 +47,7 @@ class Session:
     workspace: str
     active: bool = True
     history: list = field(default_factory=list)
+    guardrail_history: list[dict[str, str]] = field(default_factory=list)
     pending: dict | None = None
     last_question: str = ""
     ai_turn: dict | None = None
@@ -68,6 +70,35 @@ _WORKSPACES: dict[str, DemoWorkspace] = {}
 def require_login(session: Session):
     if not session.active:
         raise LoginRequired("This demo login ended. Choose a person and log in again.")
+
+
+def guardrail_view(session: Session) -> dict[str, Any]:
+    """Return display-only guardrail activity for the selected demo session."""
+    history = copy.deepcopy(session.guardrail_history)
+    blocked = sum(item.get("decision") == "block" for item in history)
+    return {
+        "history": history,
+        "requests": len(history),
+        "blocked": blocked,
+        "allowed": len(history) - blocked,
+    }
+
+
+def guardrail_check(session: Session, prompt: Any) -> dict[str, Any]:
+    text = " ".join(str(prompt or "").split())
+    if not 1 <= len(text) <= 3000:
+        raise ValueError("Enter a prompt between 1 and 3,000 characters to test the guardrails.")
+    verdict = ai.guardrail_decision(text, session.account.profile)
+    item = {
+        "id": secrets.token_urlsafe(8),
+        "time": time.strftime("%H:%M:%S", time.localtime()),
+        "account": session.account.profile["name"],
+        "prompt": text,
+        **verdict,
+    }
+    session.guardrail_history.insert(0, item)
+    del session.guardrail_history[MAX_GUARDRAIL_HISTORY:]
+    return {"result": copy.deepcopy(item), "guardrails": guardrail_view(session)}
 
 
 def revoke(workspace: DemoWorkspace):
@@ -152,6 +183,7 @@ def login_action(data: dict) -> dict:
                 account=saved.account if saved else profiles.DemoAccount(selected.id),
                 workspace=key,
                 history=copy.deepcopy(saved.history) if saved else [],
+                guardrail_history=copy.deepcopy(saved.guardrail_history) if saved else [],
                 last_question=saved.last_question if saved else "",
                 period=saved.period if saved else "month",
             )
@@ -182,6 +214,7 @@ def login_action(data: dict) -> dict:
                 "dashboard": dashboard(session.account, session.period),
                 "messages": copy.deepcopy(session.history),
                 "pending": pending_view(session.pending),
+                "guardrails": guardrail_view(session),
                 "voice": {**capabilities(), "speech": speech_capabilities()},
             }
 
@@ -499,7 +532,14 @@ def workspace_action(payload: Any) -> dict:
                 return cached
             if op in {"ai_context", "ai_finish", "ai_abort"}:
                 return ai_action(session, payload)
-            if op == "dashboard":
+            if op == "guardrail_history":
+                response = {"guardrails": guardrail_view(session)}
+            elif op == "guardrail_check":
+                response = guardrail_check(session, payload.get("prompt"))
+            elif op == "clear_guardrail_history":
+                session.guardrail_history.clear()
+                response = {"guardrails": guardrail_view(session)}
+            elif op == "dashboard":
                 if payload.get("period") not in {None, "month", "last_month", "90days"}:
                     raise ValueError("Choose a supported reporting period.")
                 session.period = payload.get("period") or session.period
