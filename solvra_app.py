@@ -2971,14 +2971,41 @@ def launch_options() -> dict[str, Any]:
     return {"theme": light_only_theme(), "css": APP_CSS, "js": FORCE_LIGHT_JS}
 
 
+def configured_server_port() -> int | None:
+    """Return an explicitly requested port, or let Gradio find an available one.
+
+    Passing ``7860`` ourselves restricted Gradio to that single port.  Passing
+    ``None`` preserves Gradio's normal fallback range when the default port is
+    occupied, which is especially useful in reused Colab and notebook runtimes.
+    Set ``GRADIO_SERVER_PORT`` only when a particular port is required; leave
+    it unset for automatic selection.
+    """
+    value = os.environ.get("GRADIO_SERVER_PORT", "").strip()
+    if not value:
+        return None
+
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            "GRADIO_SERVER_PORT must be a number from 1 to 65535; leave it unset "
+            "to select an available port automatically."
+        ) from exc
+
+    if not 1 <= port <= 65535:
+        raise ValueError("GRADIO_SERVER_PORT must be a number from 1 to 65535.")
+    return port
+
+
 # ---------------------------- application launch ----------------------------
 def main():
     """Start the app; inside Google Colab it also prints a public https share link."""
+    server_port = configured_server_port()
     app = launch_app()
     app.launch(
         share="google.colab" in sys.modules,
         server_name="0.0.0.0",
-        server_port=int(os.environ.get("GRADIO_SERVER_PORT", "7860")),
+        server_port=server_port,
         show_error=True,
         height=900,
         footer_links=[],
