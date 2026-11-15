@@ -1,6 +1,7 @@
 """Keep the distributed Colab entry point in sync with the app people test."""
 
 import json
+import shutil
 import sys
 
 from scripts.build_notebook import FILES, ROOT, build
@@ -17,6 +18,11 @@ def test_notebook_is_current_compilable_and_extracts_exact_sources():
         if not source.startswith("%pip"):
             compile(source, f"notebook:{cell['id']}", "exec")
     bootstrap = next(cell for cell in cells if "_bundle = " in "".join(cell["source"]))
+    bootstrap_source = "".join(bootstrap["source"])
+    # Colab can remove /tmp content while the Gradio server still needs its
+    # frontend files, so the extracted workspace must outlive a temp directory.
+    assert 'Path.cwd() / ".solvra-workspace"' in bootstrap_source
+    assert "TemporaryDirectory" not in bootstrap_source
     namespace = {}
     original_path = sys.path[:]
     try:
@@ -27,5 +33,5 @@ def test_notebook_is_current_compilable_and_extracts_exact_sources():
             assert (extracted / name).read_bytes() == (ROOT / name).read_bytes()
     finally:
         sys.path[:] = original_path
-        if "_solvra_runtime" in namespace:
-            namespace["_solvra_runtime"].cleanup()
+        if "_solvra_root" in namespace:
+            shutil.rmtree(namespace["_solvra_root"], ignore_errors=True)
