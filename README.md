@@ -40,7 +40,9 @@ pip install -r requirements.txt
 python solvra_app.py
 ```
 
-Open http://localhost:7860. The microphone works on `localhost` or on an `https` link. Browsers block it on plain `http://` addresses.
+Solvra uses port 7860 when it is available; otherwise Gradio automatically selects another open local port and prints its URL. The microphone works on `localhost` or on an `https` link. Browsers block it on plain `http://` addresses.
+
+To require a particular port, set `GRADIO_SERVER_PORT` before running the app (for example, `GRADIO_SERVER_PORT=7861 python solvra_app.py`). Leave it unset to let Gradio choose an available port.
 
 ## How voice works
 

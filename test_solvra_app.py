@@ -155,6 +155,25 @@ def test_account_updates_require_confirmation_and_sync_the_ledger():
     assert store.records["income_history"].iloc[-1].amount == 200
 
 
+def test_server_port_configuration_falls_back_or_honors_an_explicit_port(monkeypatch):
+    monkeypatch.delenv("GRADIO_SERVER_PORT", raising=False)
+    assert app.configured_server_port() is None
+
+    monkeypatch.setenv("GRADIO_SERVER_PORT", "   ")
+    assert app.configured_server_port() is None
+
+    monkeypatch.setenv("GRADIO_SERVER_PORT", "7861")
+    assert app.configured_server_port() == 7861
+
+    monkeypatch.setenv("GRADIO_SERVER_PORT", "not-a-port")
+    with pytest.raises(ValueError, match="1 to 65535"):
+        app.configured_server_port()
+
+    monkeypatch.setenv("GRADIO_SERVER_PORT", "65536")
+    with pytest.raises(ValueError, match="1 to 65535"):
+        app.configured_server_port()
+
+
 def test_gradio_interface_is_a_single_page_with_live_voice():
     import gradio as gr
 
