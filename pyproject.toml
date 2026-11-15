@@ -1,4 +1,12 @@
+[tool.ruff]
+line-length = 100
+# The notebook is generated and validated by scripts/build_notebook.py --check.
+extend-exclude = ["Solvra_Financial_Triage.ipynb"]
+
 [tool.ruff.lint]
 # Gradio callbacks and optional OCR/voice/reporting features turn failures into
 # user-facing messages or fallbacks. Keep these boundaries resilient at runtime.
 ignore = ["BLE001"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
