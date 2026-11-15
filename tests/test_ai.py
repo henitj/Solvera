@@ -134,7 +134,13 @@ def test_ai_answer_updates_one_owned_record_and_its_authorized_speech(session, m
     assert "$19,259.44" in finished["sources"][0]["detail"]
     assert "$7,740.00" in finished["sources"][0]["detail"]
     restored = w.workspace_action({"op": "bootstrap", "session": session["session"]})
-    assert restored["guardrails"] == {"history": [], "requests": 0, "blocked": 0, "allowed": 0}
+    assert restored["guardrails"] == {
+        "policy_version": w.GUARDRAIL_POLICY_VERSION,
+        "history": [],
+        "requests": 0,
+        "blocked": 0,
+        "allowed": 0,
+    }
     assert len(restored["messages"]) == 2
     assert restored["messages"][-1]["engine"] == "puter"
     assert "forty-four cents" in restored["messages"][-1]["speech"]
@@ -294,6 +300,7 @@ def test_visible_guardrail_monitor_blocks_unsafe_prompts_without_model_or_ledger
     )
     assert response["result"]["decision"] == "block"
     assert response["result"]["category"] == category
+    assert response["guardrails"]["policy_version"] == w.GUARDRAIL_POLICY_VERSION
     assert response["guardrails"]["requests"] == response["guardrails"]["blocked"] == 1
     assert response["guardrails"]["allowed"] == 0
     assert not w._SESSIONS[session["session"]].history
@@ -353,7 +360,13 @@ def test_visible_guardrail_monitor_records_allowed_and_blocked_prompts_per_demo_
     ]
     assert w.workspace_action({"op": "clear_guardrail_history", "session": session["session"]})[
         "guardrails"
-    ] == {"history": [], "requests": 0, "blocked": 0, "allowed": 0}
+    ] == {
+        "policy_version": w.GUARDRAIL_POLICY_VERSION,
+        "history": [],
+        "requests": 0,
+        "blocked": 0,
+        "allowed": 0,
+    }
 
 
 def test_history_and_context_are_bounded_and_ignore_client_injected_messages(session):

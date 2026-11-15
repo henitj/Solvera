@@ -33,6 +33,9 @@ SESSION_TTL = 8 * 60 * 60
 MAX_SESSIONS = 64
 MAX_HISTORY = 80
 MAX_GUARDRAIL_HISTORY = 50
+# The browser verifies this before enabling the monitor. It prevents a newer
+# guardrails UI from silently accepting decisions supplied by an older runtime.
+GUARDRAIL_POLICY_VERSION = "finance-topic-v2"
 _LOCK = threading.RLock()
 _SESSIONS: dict[str, Session] = {}
 
@@ -77,6 +80,7 @@ def guardrail_view(session: Session) -> dict[str, Any]:
     history = copy.deepcopy(session.guardrail_history)
     blocked = sum(item.get("decision") == "block" for item in history)
     return {
+        "policy_version": GUARDRAIL_POLICY_VERSION,
         "history": history,
         "requests": len(history),
         "blocked": blocked,
