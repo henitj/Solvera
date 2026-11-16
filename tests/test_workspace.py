@@ -575,10 +575,24 @@ def test_expanded_conversational_questions_are_answered(account):
     assert big["intent"] == "spending" and "largest" in big["reply"].lower()
 
     greeting = answer_question("Hello", account)
-    assert greeting["intent"] == "greeting" and "Solvra" in greeting["reply"]
+    assert greeting["intent"] == "greeting" and "Solvera" in greeting["reply"]
 
     unrelated = answer_question("tell me a joke about penguins", account)
     assert unrelated["intent"] == "help" and "only help with personal-finance questions" in unrelated["reply"]
+
+
+@pytest.mark.parametrize("prompt", ["Hello Solvera", "Who are you?", "What is Solvera?"])
+def test_assistant_uses_correct_public_name(account, prompt):
+    response = answer_question(prompt, account)
+    assert response["intent"] == "greeting"
+    assert "Solvera" in response["reply"]
+    assert "Solvra" not in response["reply"]
+
+
+def test_thanks_addressed_to_solvera_is_recognized(account):
+    response = f.assistant_turn("Thanks Solvera", account=account)
+    assert response["intent"] == "greeting"
+    assert "You're welcome" in response["reply"]
 
 
 def test_trim_silence_strips_leading_trailing_energy():

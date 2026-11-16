@@ -12,6 +12,6 @@ were executed. It is embedded with the app but only initialized after AI consent
 - Copyright 2024-present Puter Technologies Inc.; Apache-2.0.
   See `licenses/PUTER.txt`.
 
-The SDK manages the user's Puter authentication in their browser. Solvra never asks
+The SDK manages the user's Puter authentication in their browser. Solvera never asks
 for a pasted API key or forwards that credential to its Python server. AI requests
 still require internet access to Puter and the user's own account allowance.

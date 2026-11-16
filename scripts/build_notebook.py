@@ -118,13 +118,13 @@ for _solvra_module in (
     "solvra_speech",
 ):
     sys.modules.pop(_solvra_module, None)
-print("Workspace source and local assets are ready. After an update, run Open Solvra again and use its newly printed link.")
+print("Workspace source and local assets are ready. After an update, run Open Solvera again and use its newly printed link.")
 """
     )
     cells = [
         cell(
             "markdown",
-            "# Solvra — your money, in focus\n\nA complete financial workspace: cash-flow charts, searchable transactions, an explainable bill planner, account-grounded chat, and voice with live captions and an offline fallback.\n\n**Four fictional households · snapshot November 14, 2026 · not financial advice.** No bank is connected and no money is moved.\n\nRun the four cells below in order. No paid API key is required. Offline recognition is bundled; natural neural read-aloud downloads about 90 MB of verified model assets on first use. This notebook embeds the exact Python and frontend sources from the repository; it does not fetch an older copy from `main`. If you replace this notebook while a Colab runtime is still open, run **Load the workspace** and **Open Solvra** again, then use the newly printed link so the frontend and backend match.\n",
+            "# Solvera — your money, in focus\n\nA complete financial workspace: cash-flow charts, searchable transactions, an explainable bill planner, account-grounded chat, and voice with live captions and an offline fallback.\n\n**Four fictional households · snapshot November 14, 2026 · not financial advice.** No bank is connected and no money is moved.\n\nRun the four cells below in order. No paid API key is required. Offline recognition is bundled; natural neural read-aloud downloads about 90 MB of verified model assets on first use. This notebook embeds the exact Python and frontend sources from the repository; it does not fetch an older copy from `main`. If you replace this notebook while a Colab runtime is still open, run **Load the workspace** and **Open Solvera** again, then use the newly printed link so the frontend and backend match.\n",
             "intro",
         ),
         cell(
@@ -161,7 +161,7 @@ print("Workspace source and local assets are ready. After an update, run Open So
         ),
         cell(
             "markdown",
-            "## 5 · Open Solvra\n\nOpen the public **HTTPS** link printed below in its **own browser tab**, not the embedded Colab frame. Keep the runtime running. Choose Maya, Jordan, Aisha or Marcus at the clearly labeled simulated login, then select **Log in to demo**. Each has a distinct in-memory financial scenario. Use **Settings → Log out** to choose someone else. No real credentials are needed.\n",
+            "## 5 · Open Solvera\n\nOpen the public **HTTPS** link printed below in its **own browser tab**, not the embedded Colab frame. Keep the runtime running. Choose Maya, Jordan, Aisha or Marcus at the clearly labeled simulated login, then select **Log in to demo**. Each has a distinct in-memory financial scenario. Use **Settings → Log out** to choose someone else. No real credentials are needed.\n",
             "launch-info",
         ),
         cell("code", "solvra.main()\n", "launch"),

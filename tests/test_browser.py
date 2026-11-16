@@ -1,4 +1,4 @@
-"""Opt-in real-browser regressions. Start Solvra, then set SOLVRA_E2E_URL.
+"""Opt-in real-browser regressions. Start Solvera, then set SOLVRA_E2E_URL.
 
 No real microphone is opened: Chromium uses its fake capture device and recognition
 is simulated where deterministic captions are needed. The upload test uses real
@@ -268,10 +268,10 @@ def test_browser_recognition_biases_finance_terms_without_overriding_confident_w
     assert settings["language"] == "en-US"
     assert settings["interim"] is False
     assert settings["alternatives"] == 3
-    assert {"Solvra", "checking balance", "Marcus Bennett"}.issubset(
+    assert {"Solvera", "checking balance", "Marcus Bennett"}.issubset(
         {item["phrase"] for item in settings["phrases"]}
     )
-    assert next(item["boost"] for item in settings["phrases"] if item["phrase"] == "Solvra") == 7
+    assert next(item["boost"] for item in settings["phrases"] if item["phrase"] == "Solvera") == 7
 
     # A much lower-confidence alternative that merely has more finance keywords
     # must not replace the recognizer's more certain wording.
@@ -1139,6 +1139,54 @@ def log_out(page):
     page.wait_for_selector("#demo-person:not(:disabled)", timeout=45000)
     assert page.locator("#demo-login").is_visible()
     assert not page.locator("#workspace-shell").is_visible()
+
+
+@pytest.mark.parametrize("width", [1440, 390], ids=["desktop", "mobile"])
+def test_login_and_home_share_the_solvera_brand(page, width):
+    page.set_viewport_size({"width": width, "height": 1000})
+    page.goto(URL)
+    page.wait_for_selector("#demo-person:not(:disabled)", timeout=45000)
+    page.evaluate("document.fonts.ready")
+    assert page.title() == "Solvera — your money, in focus"
+
+    snapshot = """el => {
+        const mark = el.querySelector('.brand-mark');
+        const font = getComputedStyle(el);
+        const style = getComputedStyle(mark);
+        return {
+            text: el.textContent.replace(/\\s+/g, ''),
+            svg: mark.innerHTML,
+            font: ['fontFamily', 'fontSize', 'fontWeight', 'letterSpacing', 'lineHeight', 'color']
+                .map(key => font[key]),
+            mark: ['width', 'height', 'backgroundColor', 'color', 'borderRadius']
+                .map(key => style[key]),
+            dot: getComputedStyle(el.querySelector('.brand-dot')).color,
+        };
+    }"""
+    login_brand = page.locator(".login-brand").evaluate(snapshot)
+    assert login_brand["text"] == "solvera."
+    assert 'd="M3 10v4m4-8v12m5-16v20m5-17v14m4-10v6"' in login_brand["svg"]
+
+    choose_person(page, "maya")
+    if width <= 760:
+        page.locator("#mobile-menu").click()
+    home_brand = page.get_by_role("button", name="Solvera overview", exact=True)
+    assert home_brand.is_visible()
+    assert home_brand.evaluate(snapshot) == login_brand
+    assert home_brand.evaluate("el => el.scrollWidth <= el.clientWidth")
+    assert page.locator(".assistant-header b").text_content() == "Solvera assistant"
+    assert page.locator("#chat-mic").get_attribute("aria-label") == "Ask Solvera by voice"
+
+    page.locator('.main-nav [data-view="transactions"]').click()
+    page.wait_for_selector("#tx-results")
+    if width <= 760:
+        page.locator("#mobile-menu").click()
+    home_brand.click()
+    page.wait_for_selector(".stats-grid")
+    if width <= 760:
+        page.locator("#mobile-menu").click()
+    log_out(page)
+    assert page.locator(".login-brand").evaluate(snapshot) == login_brand
 
 
 def test_fake_login_is_explicit_and_logout_after_refresh_returns_people_dropdown(page):

@@ -86,7 +86,7 @@ NUMBER_WORDS = {
 def normalize(text: str) -> str:
     text = re.sub(r"\s+", " ", str(text or "").replace("’", "'").replace("–", "-")).strip()
     return (
-        re.sub(r"^(?:(?:hey|hi|okay|ok)\s+)?solvra[\s,.!?]*", "", text, flags=re.IGNORECASE).strip()
+        re.sub(r"^(?:(?:hey|hi|okay|ok)\s+)?solve?ra\b[\s,.!?]*", "", text, flags=re.IGNORECASE).strip()
         or text
     )
 
@@ -366,14 +366,14 @@ def answer_question(question: str, account: f.AccountStore, context: list | None
             "help",
         )
 
-    if re.search(r"^(?:hi|hello|hey|greetings|howdy|good\s+(?:morning|afternoon|evening))\b", low) or low in ("help", "what can you do", "who are you", "what is solvra"):
+    if re.search(r"^(?:hi|hello|hey|greetings|howdy|good\s+(?:morning|afternoon|evening))\b", low) or low in ("help", "what can you do", "who are you", "what is solvera", "what is solvra"):
         p_info = getattr(account, "profile", {})
         name = p_info.get("first_name", "there")
         checking = account.balance("Checking")
         bills = f.current_open_bills(account, 14)
         t = financial_trouble(account)
         reply = (
-            f"Hello, {name}! I'm Solvra, your personal finance assistant for this demo account.\n\n"
+            f"Hello, {name}! I'm Solvera, your personal finance assistant for this demo account.\n\n"
             f"Here is a quick snapshot of your finances:\n"
             f"• Checking: {f.money(checking)} | Savings: {f.money(account.balance('Savings'))}\n"
             f"• Upcoming bills: {len(bills)} due in the next 14 days ({f.money(sum(b.amount for b in bills))})\n"
@@ -1561,7 +1561,7 @@ def conversation_turn(
         res = result(f.confirm_account_update(pending, False, account), "update")
     elif low in f._GREETINGS:
         res = result(
-            f"Hi! I'm Solvra. I can help make sense of your money. Your checking balance is {f.money(account.balance('Checking'))}. Ask what to pay first, compare spending, or check whether a purchase fits your plan.",
+            f"Hi! I'm Solvera. I can help make sense of your money. Your checking balance is {f.money(account.balance('Checking'))}. Ask what to pay first, compare spending, or check whether a purchase fits your plan.",
             "greeting",
             pending=pending,
         )
@@ -1573,7 +1573,7 @@ def conversation_turn(
         )
         end = True
     elif re.fullmatch(
-        r"(?:thanks|thank you|thank you so much|thanks a lot|cool|great|awesome|perfect|got it)(?: solvra)?",
+        r"(?:thanks|thank you|thank you so much|thanks a lot|cool|great|awesome|perfect|got it)(?: solve?ra)?",
         low,
     ):
         res = result(
@@ -1586,7 +1586,7 @@ def conversation_turn(
         low,
     ):
         res = result(
-            "I'm Solvra, an account-grounded money assistant. Ask what to pay first, compare groceries between months, check a purchase against a 30-day buffer, or preview a late payment. I can record income or a bill you've already paid, but only after you confirm.\n\nConnect Grok AI in the assistant panel for broader finance-only guidance. Without that optional connection, the local financial engine still provides account calculations and confirmations. It uses fictional account data and cannot access your bank or make payments.",
+            "I'm Solvera, an account-grounded money assistant. Ask what to pay first, compare groceries between months, check a purchase against a 30-day buffer, or preview a late payment. I can record income or a bill you've already paid, but only after you confirm.\n\nConnect Grok AI in the assistant panel for broader finance-only guidance. Without that optional connection, the local financial engine still provides account calculations and confirmations. It uses fictional account data and cannot access your bank or make payments.",
             "help",
             pending=pending,
         )

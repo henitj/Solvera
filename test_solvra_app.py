@@ -245,9 +245,15 @@ def test_gradio_interface_has_the_financial_workspace_and_voice_transport():
         "transcribe_clip",
         "workspace_action",
     }
+    assert interface.title == "Solvera — your money, in focus"
     assert "VoiceController" in workspace.js_on_load
     assert 'data-view="transactions"' in workspace.value
     assert "voice-transcript" in workspace.value
+    # Login and home must use the same waveform, wordmark, and shared styling.
+    assert workspace.value.count('class="brand-mark" data-icon="wave"') == 2
+    assert workspace.value.count('<span>solvera<span class="brand-dot">.</span></span>') == 2
+    assert workspace.value.count('brand-logo"') == 2
+    assert "Solvra" not in workspace.value
     reply = app.live_turn({"text": "How much money do I have?", "pending": None, "last": ""})
     assert reply["code"] == "login_required"
     import solvra_workspace as workspace
@@ -266,15 +272,16 @@ def test_gradio_interface_has_the_financial_workspace_and_voice_transport():
     assert theme.body_background_fill_dark == theme.body_background_fill
 
 
-def test_live_turn_handles_voice_confirmation_and_small_talk():
+@pytest.mark.parametrize("assistant_name", ["Solvera", "Solvra"])
+def test_live_turn_handles_voice_confirmation_and_small_talk(assistant_name):
     store = app.AccountStore(app.generate_demo_records())
     start = store.balance("Checking")
 
-    turn = app.assistant_turn("Hey Solvra, I got paid $500 today", None, "", store)
+    turn = app.assistant_turn(f"Hey {assistant_name}, I got paid $500 today", None, "", store)
     assert turn["pending"]["action"] == "income" and turn["pending"]["amount"] == 500
     assert store.balance("Checking") == start
 
-    declined = app.assistant_turn("no thanks", turn["pending"], "", store)
+    declined = app.assistant_turn(f"no thanks {assistant_name}", turn["pending"], "", store)
     assert declined["pending"] is None and not declined["changed"]
     assert store.balance("Checking") == start
 
@@ -283,11 +290,11 @@ def test_live_turn_handles_voice_confirmation_and_small_talk():
     other = app.assistant_turn("okay what should I pay first", turn["pending"], "", store)
     assert not other["changed"] and store.balance("Checking") == start
 
-    confirmed = app.assistant_turn("Yes please", turn["pending"], "", store)
+    confirmed = app.assistant_turn(f"Yes please {assistant_name}", turn["pending"], "", store)
     assert confirmed["changed"] and confirmed["pending"] is None
     assert store.balance("Checking") == pytest.approx(start + 500)
 
-    assert "Solvra" in app.assistant_turn("hello", None, "", store)["reply"]
+    assert "Solvera" in app.assistant_turn("hello", None, "", store)["reply"]
     assert app.assistant_turn("goodbye", None, "", store)["end"] is True
     assert "pay first" in app.assistant_turn("what can you do", None, "", store)["reply"]
 

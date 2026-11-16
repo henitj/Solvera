@@ -69,7 +69,7 @@ class VoiceController {
         "idle",
         "Ready when you are",
         this.selectedMode() === "offline"
-          ? "Offline English recording. Pause or stop when done; Solvra will process and send it."
+          ? "Offline English recording. Pause or stop when done; Solvera will process and send it."
           : "Browser speech recognition with live captions.",
       );
       $("voice-language").disabled = this.selectedMode() === "offline";
@@ -287,7 +287,7 @@ class VoiceController {
           ? "Speak and watch the bars. Nothing from this test is uploaded."
           : this.mode === "browser"
             ? "Your words appear below. Pause or tap Stop when you’re done."
-            : "Speak clearly, then pause or tap Stop. Solvra will process and send one question.",
+            : "Speak clearly, then pause or tap Stop. Solvera will process and send one question.",
       );
       this.beginMeter(stream, ctx, epoch, testOnly);
       if (!testOnly && this.mode === "browser") this.beginBrowser(epoch);
@@ -460,7 +460,7 @@ class VoiceController {
     } catch {
       this.fallbackToOffline(
         epoch,
-        "Browser recognition could not start. Use offline recording; Solvra will process and send the completed question.",
+        "Browser recognition could not start. Use offline recording; Solvera will process and send the completed question.",
       );
       return;
     }
@@ -552,7 +552,7 @@ class VoiceController {
     this.setPhase(
       "listening",
       "Recording offline.",
-      message + " Pause or tap Stop when done. Solvra will process and send the completed question.",
+      message + " Pause or tap Stop when done. Solvera will process and send the completed question.",
     );
   }
   detachRecognition() {
@@ -660,7 +660,7 @@ class VoiceController {
     }
     if (chunks.length && this.caps.offline) {
       const type = mime.includes("mp4") ? "m4a" : mime.includes("ogg") ? "ogg" : "webm";
-      const file = new File(chunks, "solvra-voice." + type, { type: mime });
+      const file = new File(chunks, "solvera-voice." + type, { type: mime });
       await this.transcribeFile(file, epoch, { sendWhenReady: true });
       return;
     }
@@ -782,7 +782,7 @@ class VoiceController {
   recognitionTerms() {
     const profileName = String(state.profile?.name || "").trim();
     return [
-      "Solvra",
+      "Solvera",
       "checking account",
       "checking balance",
       "savings account",
@@ -830,7 +830,7 @@ class VoiceController {
       // third-party speech service. Browsers that do not implement it use their
       // normal recognizer unchanged.
       rec.phrases = [...new Set(this.recognitionTerms())].map(
-        (term) => new Phrase(term, term === "Solvra" ? 7 : 5),
+        (term) => new Phrase(term, term === "Solvera" ? 7 : 5),
       );
     } catch {
       // Phrase bias is experimental; an unsupported implementation must not
@@ -963,7 +963,7 @@ class VoiceController {
     const mic = $("chat-mic");
     if (mic) {
       mic.classList.toggle("recording", listening);
-      mic.setAttribute("aria-label", listening ? "Stop and send voice question" : "Ask Solvra by voice");
+      mic.setAttribute("aria-label", listening ? "Stop and send voice question" : "Ask Solvera by voice");
       mic.setAttribute("title", listening ? "Listening… tap to finish" : "Ask by voice");
     }
     const launch = $("voice-launch");

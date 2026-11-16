@@ -568,7 +568,7 @@ def workspace_action(payload: Any) -> dict:
                 tx = filtered_transactions(session, payload)
                 response = {
                     "csv": export_csv(tx),
-                    "filename": f"solvra-{session.account.profile['id']}-transactions-{f.AS_OF}.csv",
+                    "filename": f"solvera-{session.account.profile['id']}-transactions-{f.AS_OF}.csv",
                     "count": len(tx),
                 }
             elif op == "plan":

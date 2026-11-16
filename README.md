@@ -1,4 +1,4 @@
-# Solvra
+# Solvera
 
 **Track:** AI + Finance
 
@@ -10,7 +10,7 @@ Households juggling tight cash flow, irregular paychecks, or unexpected expenses
 
 ## What we built
 
-Solvra is an interactive, voice-enabled financial triage workspace and account-grounded assistant backed by deterministic household ledgers (`solvra_app.py` locally or via `Solvra_Financial_Triage.ipynb` in Google Colab).
+Solvera is an interactive, voice-enabled financial triage workspace and account-grounded assistant backed by deterministic household ledgers (`solvra_app.py` locally or via `Solvra_Financial_Triage.ipynb` in Google Colab).
 
 - **What goes in:** A user selects one of four fictional demo households (ranging from stable cash cushion to critical overdue rent and utilities), sets cash-reserve or expected-paycheck preferences, and asks typed or spoken financial questions, tests "what-if" late-payment scenarios, or stages new deposits/payments.
 - **What comes out:**
@@ -29,7 +29,7 @@ We built a deterministic, seeded synthetic ledger generator (`RNG_SEED = 271828`
 - **Savings-classifier training data:** A separate, reproducible dataset of 4,000 synthetic monthly-budget profiles is generated in `solvra_savings_model.py`. Target categories are assigned by a documented hypothetical-headroom heuristic; these are not observed household decisions or records from an external public dataset. Rows with missing selected features/labels are dropped before model fitting.
 
 **Model:**
-Solvra uses a hybrid neuro-symbolic architecture so arithmetic and account mutations remain exact while open-ended guidance stays conversational:
+Solvera uses a hybrid neuro-symbolic architecture so arithmetic and account mutations remain exact while open-ended guidance stays conversational:
 - **Triage & Optimization (Deterministic Core):** A 6-factor rules-based triage engine (`Triage v1`) with explicit safety floors for overdue essentials/housing, paired with a **SciPy Mixed-Integer Linear Programming (`scipy.optimize.milp`)** two-pass optimizer that minimizes late fees, daily APR interest, and consequence risk under strict cash-by-date constraints.
 - **Conversational AI (`x-ai/grok-4-1-fast-non-reasoning` via Puter.js):** Chosen for low-latency, structured JSON financial guidance without requiring backend API keys. A two-stage topic gate checks scope before sharing bounded account summaries, and the LLM has zero action/mutation tools—every ledger update requires server-enforced confirmation.
 - **Savings-category classifier:** A `RandomForestClassifier` uses monthly income and expense-category amounts to choose a category to review. The synthetic target is the category with the largest heuristic potential; for the displayed account, the classifier ranks the selected fictional profile's last-90-day category spending.
@@ -37,7 +37,7 @@ Solvra uses a hybrid neuro-symbolic architecture so arithmetic and account mutat
 
 ## Results
 
-Solvra combines decision-support, optimization, a supervised savings-category experiment, and a guarded assistant. We evaluated the ML experiment on held-out synthetic profiles and the other components against baseline heuristics and held-out test scenarios across our automated regression suite (`test_solvra_app.py` and `tests/`):
+Solvera combines decision-support, optimization, a supervised savings-category experiment, and a guarded assistant. We evaluated the ML experiment on held-out synthetic profiles and the other components against baseline heuristics and held-out test scenarios across our automated regression suite (`test_solvra_app.py` and `tests/`):
 
 - **Savings-category classifier:** With a fixed seed, the model achieved **91.5% top-category accuracy** on 1,000 held-out synthetic profiles, versus a **12.5% expected hit rate** for an equal-allocation baseline across eight categories (3,000 training profiles). This measures agreement with the generated heuristic labels only. It does not establish real-user accuracy, genuine savings, or financial benefit; the suggested dollar headroom is also a rule-based estimate, not a forecast.
 
@@ -52,7 +52,7 @@ Solvra combines decision-support, optimization, a supervised savings-category ex
 
 ## What we'd do next
 
-1. **Privacy-preserving real transaction ingestion & categorization:** Support user-uploaded bank/card CSV and OFX statements with local merchant normalization, recurring-bill detection, and uncertainty flags so people can run Solvra's triage and MILP bill planner on their own exported data without linking bank credentials.
+1. **Privacy-preserving real transaction ingestion & categorization:** Support user-uploaded bank/card CSV and OFX statements with local merchant normalization, recurring-bill detection, and uncertainty flags so people can run Solvera's triage and MILP bill planner on their own exported data without linking bank credentials.
 2. **Multi-month stochastic cash-flow simulation & benchmarked voice/NLU:** Extend the 35–40 day deterministic MILP planner into a 3–6 month Monte Carlo cash-flow simulator for irregular earners (like Jordan), and bundle a quantized local Whisper + small local language model benchmarked on a larger held-out corpus of messy spoken financial queries.
 
 ## Sources
@@ -68,7 +68,7 @@ Solvra combines decision-support, optimization, a supervised savings-category ex
   - [Gradio](https://www.gradio.app/) for the web/Colab server transport, [PyAV](https://pyav.basswood-io.com/) for bounded audio decoding, and [num2words](https://github.com/savoirfairelinux/num2words) for exact spoken currency/dates
   - [DM Sans](https://fonts.google.com/specimen/DM+Sans) (bundled UI typography) and [Pytest](https://docs.pytest.org/) / [Playwright](https://playwright.dev/python/) for automated testing
 - **Tutorials & AI tools:**
-  - **Veritas AI Workshop 1: Intro to Google Colab** (Oct 17) & **Veritas AI Workshop 2: How to Scope a Weekend AI Project** (Nov 1) — used to scope Solvra's weekend MVP, structure the evaluation plan, and package the self-contained Google Colab deployment (`Solvra_Financial_Triage.ipynb`).
+  - **Veritas AI Workshop 1: Intro to Google Colab** (Oct 17) & **Veritas AI Workshop 2: How to Scope a Weekend AI Project** (Nov 1) — used to scope Solvera's weekend MVP, structure the evaluation plan, and package the self-contained Google Colab deployment (`Solvra_Financial_Triage.ipynb`).
   - [Kaggle Learn: Python](https://www.kaggle.com/learn/python), [Intro to Machine Learning](https://www.kaggle.com/learn/intro-to-machine-learning), [Pandas](https://www.kaggle.com/learn/pandas), and [Intermediate Machine Learning](https://www.kaggle.com/learn/intermediate-machine-learning) — used for Pandas ledger cleaning/reconciliation, feature engineering, train/test validation, and tree-based `RandomForestClassifier` modeling (`solvra_savings_model.py`).
   - [scikit-learn Tutorials](https://scikit-learn.org/stable/tutorial/index.html) & [Google Machine Learning Crash Course](https://developers.google.com/machine-learning/crash-course) — referenced for group-disjoint train/test splitting (`GroupShuffleSplit`), baseline comparison, class-balanced fitting, and evaluating held-out model accuracy.
   - [Harvard CS50's Introduction to AI with Python](https://cs50.harvard.edu/ai/) — referenced for framing constrained search/optimization (`scipy.optimize.milp` bill-payment scheduling) alongside rules-based and statistical reasoning.
