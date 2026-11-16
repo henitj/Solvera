@@ -1,4 +1,4 @@
-# Solvra — a ledger-backed financial workspace with account-grounded chat and voice.
+# Solvera — a ledger-backed financial workspace with account-grounded chat and voice.
 # Runs locally or in Google Colab without paid APIs. Uses a fictional demo account.
 import calendar
 import copy
@@ -1562,6 +1562,7 @@ _YES_WORDS = _YES_STARTERS | {
     "please",
     "you",
     "right",
+    "solvera",
     "solvra",
     "that",
     "good",
@@ -1590,6 +1591,7 @@ _NO_WORDS = _NO_STARTERS | {
     "please",
     "you",
     "not",
+    "solvera",
     "solvra",
     "mind",
     "that's",
@@ -1834,7 +1836,7 @@ def launch_app():
     from solvra_workspace import workspace_action
 
     with gr.Blocks(
-        title="Solvra — your money, in focus",
+        title="Solvera — your money, in focus",
         analytics_enabled=False,
         delete_cache=(300, 300),
     ) as app:

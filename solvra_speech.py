@@ -146,7 +146,7 @@ def _download(kind: str, destination: Path) -> None:
     suffix, expected = PACKAGES[kind]
     request = urllib.request.Request(
         "https://registry.npmjs.org/" + suffix,
-        headers={"User-Agent": "Solvra-local-voice/1"},
+        headers={"User-Agent": "Solvera-local-voice/1"},
     )
     deadline, size = time.monotonic() + 150, 0
     with (

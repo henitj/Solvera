@@ -547,7 +547,7 @@ function renderInsights() {
   $("view-content").innerHTML =
     troubleMarkup() +
     savingsModelMarkup(d) +
-    `<section class="card"><div class="health-card"><div class="health-gauge"><svg viewBox="0 0 110 110" role="img" aria-label="Financial health score ${d.health.score} out of 100"><circle cx="55" cy="55" r="47" stroke="var(--surface-muted)" stroke-width="7" fill="none"/><circle cx="55" cy="55" r="47" stroke="var(--primary)" stroke-width="7" fill="none" stroke-linecap="round" stroke-dasharray="${(d.health.score / 100) * 295.3} 295.3"/></svg><span><b>${d.health.score}</b><small>OUT OF 100</small></span></div><div><h2 class="section-title">A check-in, not a judgment.</h2><p>Your modeled financial health, from seven account-history factors. Not a credit score or a guarantee. Click below to see what goes into it.</p><button class="text-button" style="margin-top:9px" data-action="toggle-factors">See the full breakdown ${icon("chevron-down")}</button></div></div><div id="health-factors" class="health-factors" hidden>${d.health.factors.map((v) => `<div class="health-factor"><span>${esc(v.factor)} <small>(${Math.round(v.weight * 100)}% weight)</small></span><span class="factor-track"><i style="width:${v.component_score_0_100}%"></i></span><span class="factor-score">${Math.round(v.component_score_0_100)}</span></div>`).join("")}</div></section>${d.insights.map((i) => `<article class="insight-full" data-tone="${esc(i.tone)}"><div class="insight-eyebrow">${icon(i.icon)}${esc(i.eyebrow)}</div><h2>${esc(i.title)}</h2><p>${esc(i.description)}</p><div class="insight-evidence"><b>The working, not just the takeaway</b>${i.evidence.map((s) => `<div>• ${esc(s)}</div>`).join("")}</div><div class="insight-actions"><span class="insight-type">Account-derived · as of ${date(d.as_of)}</span><button class="button secondary" data-prompt="${esc(i.prompt)}">Explore with Solvra ${icon("arrow-up-right")}</button></div></article>`).join("")}<div class="assumptions">These are rules-based observations from fictional data, not AI predictions or personalized financial advice. Spending comparisons use the same days of the prior month for a partial current month. No bank connection or external data is used.</div>`;
+    `<section class="card"><div class="health-card"><div class="health-gauge"><svg viewBox="0 0 110 110" role="img" aria-label="Financial health score ${d.health.score} out of 100"><circle cx="55" cy="55" r="47" stroke="var(--surface-muted)" stroke-width="7" fill="none"/><circle cx="55" cy="55" r="47" stroke="var(--primary)" stroke-width="7" fill="none" stroke-linecap="round" stroke-dasharray="${(d.health.score / 100) * 295.3} 295.3"/></svg><span><b>${d.health.score}</b><small>OUT OF 100</small></span></div><div><h2 class="section-title">A check-in, not a judgment.</h2><p>Your modeled financial health, from seven account-history factors. Not a credit score or a guarantee. Click below to see what goes into it.</p><button class="text-button" style="margin-top:9px" data-action="toggle-factors">See the full breakdown ${icon("chevron-down")}</button></div></div><div id="health-factors" class="health-factors" hidden>${d.health.factors.map((v) => `<div class="health-factor"><span>${esc(v.factor)} <small>(${Math.round(v.weight * 100)}% weight)</small></span><span class="factor-track"><i style="width:${v.component_score_0_100}%"></i></span><span class="factor-score">${Math.round(v.component_score_0_100)}</span></div>`).join("")}</div></section>${d.insights.map((i) => `<article class="insight-full" data-tone="${esc(i.tone)}"><div class="insight-eyebrow">${icon(i.icon)}${esc(i.eyebrow)}</div><h2>${esc(i.title)}</h2><p>${esc(i.description)}</p><div class="insight-evidence"><b>The working, not just the takeaway</b>${i.evidence.map((s) => `<div>• ${esc(s)}</div>`).join("")}</div><div class="insight-actions"><span class="insight-type">Account-derived · as of ${date(d.as_of)}</span><button class="button secondary" data-prompt="${esc(i.prompt)}">Explore with Solvera ${icon("arrow-up-right")}</button></div></article>`).join("")}<div class="assumptions">These are rules-based observations from fictional data, not AI predictions or personalized financial advice. Spending comparisons use the same days of the prior month for a partial current month. No bank connection or external data is used.</div>`;
 }
 const guardrailScenarios = [
   {
@@ -604,14 +604,14 @@ function renderGuardrails() {
   const controlsDisabled = state.guardrailBusy || !state.guardrailAvailable;
   const runtimeWarning = state.guardrailAvailable
     ? ""
-    : `<div class="guardrail-runtime-warning" role="alert"><span>${icon("info")}</span><div><b>Restart required to run guardrail tests.</b><p>This page requires a newer guardrail policy than the running server provides, so no test will be submitted. Restart or relaunch Solvra to load the matching backend. If you are using the notebook, run <b>Load the workspace</b>, then <b>Open Solvra</b>, and use the newly printed link.</p></div></div>`;
+    : `<div class="guardrail-runtime-warning" role="alert"><span>${icon("info")}</span><div><b>Restart required to run guardrail tests.</b><p>This page requires a newer guardrail policy than the running server provides, so no test will be submitted. Restart or relaunch Solvera to load the matching backend. If you are using the notebook, run <b>Load the workspace</b>, then <b>Open Solvera</b>, and use the newly printed link.</p></div></div>`;
   $("view-content").innerHTML = `${runtimeWarning}<section class="guardrail-hero"><div><span class="guardrail-kicker">${icon("shield")} LOCAL POLICY GATE · DEMO MONITOR</span><h2>Test risky prompts safely.</h2><p>Every test is checked locally before it can reach AI or account data. This monitor cannot access another profile, run code, or make a ledger change.</p></div><div class="guardrail-hero-lock">${icon("lock")}<span>Selected account only<br><b>${esc(state.profile?.name || "Demo profile")}</b></span></div></section><div class="guardrail-summary"><article><span>TESTS</span><b>${num(guardrails.requests)}</b><small>this demo session</small></article><article class="blocked"><span>BLOCKED</span><b>${num(guardrails.blocked)}</b><small>stopped locally</small></article><article class="allowed"><span>ALLOWED</span><b>${num(guardrails.allowed)}</b><small>read-only prompts</small></article></div><div class="guardrail-workbench"><section class="card guardrail-tester"><div class="card-header"><div><h2 class="card-title">Input prompt</h2><p class="card-subtitle">Use a built-in attack, or try your own text. Nothing is submitted to Grok from this page.</p></div><span class="category-tag">LOCAL CHECK</span></div><form id="guardrail-form" class="guardrail-form"><label class="sr-only" for="guardrail-input">Prompt to test</label><textarea id="guardrail-input" rows="4" maxlength="3000" placeholder="Try a prompt to test the AI guardrails…" ${controlsDisabled ? "disabled" : ""}></textarea><div><small>Prompts are recorded only in this fictional demo session’s monitor.</small><button class="button primary" type="submit" ${controlsDisabled ? "disabled" : ""}>${icon("shield")}Check prompt</button></div></form><div class="guardrail-presets"><span>BUILT-IN TESTS</span><div>${guardrailScenarios.map((scenario) => `<button class="button secondary" type="button" data-guardrail-scenario="${scenario.id}" title="${esc(scenario.prompt)}" ${controlsDisabled ? "disabled" : ""}>${esc(scenario.label)} ${icon("arrow-up-right")}</button>`).join("")}</div></div></section><aside class="guardrail-latest"><h2>Guardrail decision</h2>${guardrailStatusMarkup(latest)}<div class="guardrail-basics"><b>What is enforced</b><ul><li>Other profiles stay isolated</li><li>Model prompts cannot grant permissions</li><li>Ledger changes require separate confirmation</li></ul></div></aside></div><section class="card guardrail-history"><div class="card-header"><div><h2 class="card-title">Prompt history</h2><p class="card-subtitle">Allowed and declined tests for ${esc(state.profile?.name || "this fictional account")}.</p></div><button class="text-button" data-action="clear-guardrail-history" ${history.length && !controlsDisabled ? "" : "disabled"}>Clear history ${icon("refresh")}</button></div>${history.length ? `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Account</th><th>Prompt</th><th>Decision</th><th>Reason</th></tr></thead><tbody>${history.map((item) => `<tr><td>${esc(item.time)}</td><td>${esc(item.account)}</td><td class="guardrail-prompt">${esc(item.prompt)}</td><td><span class="guardrail-decision ${item.decision === "block" ? "blocked" : "allowed"}">${item.decision === "block" ? "BLOCK" : "ALLOW"}</span></td><td class="guardrail-reason">${esc(item.reason)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="guardrail-history-empty">${icon("shield")}<b>Your prompt history will appear here.</b><p>Run a built-in test to see which requests are blocked and why.</p></div>`}</section>`;
   icons($("view-content"));
 }
 async function checkGuardrailPrompt(prompt) {
   const text = String(prompt || "").trim();
   if (!state.guardrailAvailable) {
-    toast("This server has an older guardrail policy. Restart or relaunch Solvra to load the matching backend.", true);
+    toast("This server has an older guardrail policy. Restart or relaunch Solvera to load the matching backend.", true);
     return;
   }
   if (!text || state.guardrailBusy) return;
@@ -651,7 +651,7 @@ function welcomeMarkup() {
 function messageMarkup(m, index) {
   if (m.role === "user")
     return `<div class="chat-message user"><div class="message-label">YOU</div><div class="message-text">${esc(m.content)}</div></div>`;
-  return `<div class="chat-message assistant"><div class="message-label">${icon("sparkles")}SOLVRA<span class="engine-badge">${m.intent === "scope" ? "Finance-only" : m.engine === "puter" ? "Grok AI" : "Local finance engine"}</span></div><div class="message-text">${String(
+  return `<div class="chat-message assistant"><div class="message-label">${icon("sparkles")}SOLVERA<span class="engine-badge">${m.intent === "scope" ? "Finance-only" : m.engine === "puter" ? "Grok AI" : "Local finance engine"}</span></div><div class="message-text">${String(
     m.content || "",
   )
     .split(/\n\s*\n/)
@@ -668,7 +668,7 @@ function renderChat(scroll = true) {
   if (state.busy)
     log.insertAdjacentHTML(
       "beforeend",
-      '<div class="typing-indicator" aria-label="Solvra is working"><i></i><i></i><i></i></div>',
+      '<div class="typing-indicator" aria-label="Solvera is working"><i></i><i></i><i></i></div>',
     );
   if (state.failed)
     log.insertAdjacentHTML(
@@ -1247,10 +1247,10 @@ root.addEventListener("click", async (event) => {
       state.messages
         .map(
           (m) =>
-            `${m.role === "user" ? "YOU" : "SOLVRA"}\n${m.content}${m.sources?.length ? "\nSources: " + m.sources.map((s) => s.label + ": " + s.detail).join("; ") : ""}`,
+            `${m.role === "user" ? "YOU" : "SOLVERA"}\n${m.content}${m.sources?.length ? "\nSources: " + m.sources.map((s) => s.label + ": " + s.detail).join("; ") : ""}`,
         )
         .join("\n\n"),
-      "solvra-conversation.txt",
+      "solvera-conversation.txt",
     );
     toast("Conversation downloaded.");
   }
